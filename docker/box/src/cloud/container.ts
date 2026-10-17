@@ -89,7 +89,7 @@ export async function boxState(shell: Shell, what: string): Promise<BoxState> {
 export function readToken(request: Request, env: HostEnv): string | undefined {
   if (env.GITHUB_READ_TOKEN) return env.GITHUB_READ_TOKEN;
   const token = bearer(request);
-  if (isOidc(token)) throw new Error('the host has no GITHUB_READ_TOKEN; deploy it with ~/.config/novu-box/github.env');
+  if (isOidc(token)) throw new Error('the host has no GITHUB_READ_TOKEN; set it in Cloudflare: `npx wrangler secret put GITHUB_READ_TOKEN` in docker/box');
 
   return token;
 }

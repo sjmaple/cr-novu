@@ -21,7 +21,7 @@ export async function boxes(request: Request, env: HostEnv, url: URL): Promise<R
 async function route(request: Request, env: HostEnv, url: URL): Promise<Response> {
   if (!(await authorize(request))) return text("needs the same Authorization as a box's /__box/*\n", 401);
   if (!env.CLOUDFLARE_API_TOKEN || !env.CLOUDFLARE_ACCOUNT_ID)
-    return text('the host has no CLOUDFLARE_API_TOKEN; deploy it with ~/.config/novu-box/cloudflare.env\n', 501);
+    return text('the host has no CLOUDFLARE_API_TOKEN; set it in Cloudflare: `npx wrangler secret put CLOUDFLARE_API_TOKEN` in docker/box\n', 501);
   if (request.method === 'GET' && url.pathname === '/__box/boxes') return json({ boxes: await list(env) });
   const box = url.pathname.slice('/__box/boxes/'.length);
   if (!NAME.test(box) || RESERVED.includes(boxWorker(box))) return text(`not a box name: ${box}\n`, 400);

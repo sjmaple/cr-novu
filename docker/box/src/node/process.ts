@@ -9,8 +9,6 @@ export interface RunOptions {
   readonly input?: string;
   readonly stdio?: 'inherit' | 'ignore';
   readonly onStdout?: (chunk: string) => void;
-  // Our terminal's stdin, and our process group, so the terminal's signals reach it (`docker exec -it`).
-  readonly interactive?: boolean;
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
   // From SIGTERM to SIGKILL; process-compose needs minutes for its ordered shutdown.
@@ -24,7 +22,7 @@ export interface Captured {
 }
 
 function start(cmd: string, args: ReadonlyArray<string>, options: RunOptions, piped: boolean): Promise<Captured> {
-  const { cwd, env, input, stdio = 'inherit', interactive = false, timeoutMs, signal, graceMs = 10_000 } = options;
+  const { cwd, env, input, stdio = 'inherit', timeoutMs, signal, graceMs = 10_000 } = options;
   const { onStdout } = options;
   const what = [cmd, ...args].join(' ').slice(0, 300);
   const abort = AbortSignal.any([
@@ -38,9 +36,8 @@ function start(cmd: string, args: ReadonlyArray<string>, options: RunOptions, pi
   return new Promise((resolve, reject) => {
     if (abort.aborted) return reject(failure());
     const out = piped ? 'pipe' : stdio;
-    const terminal = interactive ? 'inherit' : 'ignore';
-    const stdin = input === undefined ? terminal : 'pipe';
-    const child = spawn(cmd, args, { cwd, env, detached: !interactive, stdio: [stdin, onStdout ? 'pipe' : out, out] });
+    const stdin = input === undefined ? 'ignore' : 'pipe';
+    const child = spawn(cmd, args, { cwd, env, detached: true, stdio: [stdin, onStdout ? 'pipe' : out, out] });
     let stdout = '';
     let stderr = '';
     child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
@@ -53,7 +50,7 @@ function start(cmd: string, args: ReadonlyArray<string>, options: RunOptions, pi
     child.stdin?.end(input);
     const kill = (signal: NodeJS.Signals | 0) => {
       try {
-        return Boolean(child.pid && process.kill(interactive ? child.pid : -child.pid, signal));
+        return Boolean(child.pid && process.kill(-child.pid, signal));
       } catch {
         return false;
       }

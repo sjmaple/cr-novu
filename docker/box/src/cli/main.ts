@@ -3,52 +3,49 @@
 import type { ParseArgsOptionsConfig } from 'node:util';
 import { type Command, type Parsed, runCommand } from '../node/commands.ts';
 import { main } from '../node/main.ts';
-import { cloudTarget } from './cloud.ts';
-import { hostExists } from './cloud-http.ts';
+import { output } from '../node/process.ts';
+import { type CloudTarget, cloudTarget } from './cloud.ts';
+import { githubToken, hostExists } from './cloud-http.ts';
 import { deployHost } from './deploy.ts';
-import { dockerTarget } from './docker.ts';
 import { mail } from './mail.ts';
 import { sync } from './sync.ts';
-import { branchBox, githubToken, type Target } from './target.ts';
 
-const SHARED: ParseArgsOptionsConfig = { box: { type: 'string' }, cloud: { type: 'boolean' } };
+const SHARED: ParseArgsOptionsConfig = { box: { type: 'string' } };
 
-async function targetOf(parsed: Parsed): Promise<Target> {
-  const cloud = parsed.flag('cloud');
-  const box = parsed.option('box') ?? (cloud ? await branchBox() : 'novu-box');
+async function branchBox(): Promise<string> {
+  const name = (await output('git', ['branch', '--show-current']))
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 50)
+    .replace(/-$/, '');
+  if (!name) throw new Error('not on a branch; pass --box <name>');
 
-  return cloud ? cloudTarget({ box, token: githubToken }) : dockerTarget(box);
-}
-
-function cloudOnly(parsed: Parsed, names: ReadonlyArray<string>): void {
-  const set = names.filter((name) => (name === 'from' ? parsed.option(name) : parsed.flag(name)));
-  if (!set.length || parsed.flag('cloud')) return;
-  console.error(`${set.map((name) => `--${name}`).join(', ')}: only with --cloud`);
-  process.exit(2);
+  return name;
 }
 
 function onBox(
   usage: string,
   help: string,
-  run: (target: Target, parsed: Parsed) => Promise<number>,
+  run: (target: CloudTarget, parsed: Parsed) => Promise<number>,
   options: ParseArgsOptionsConfig = {}
 ): Command {
   return {
     usage,
     help,
     options: { ...SHARED, ...options },
-    run: async (parsed) => run(await targetOf(parsed), parsed),
+    run: async (parsed) =>
+      run(cloudTarget({ box: parsed.option('box') ?? (await branchBox()), token: githubToken }), parsed),
   };
 }
 
 const commands: Record<string, Command> = {
   up: onBox(
     '[--deploy] [--from <box>] [--no-sync]',
-    'start the box (baking next the first time); --cloud without --box also syncs',
+    'start the box (baking next the first time); without --box also syncs',
     async (target, parsed) => {
-      cloudOnly(parsed, ['deploy', 'from', 'no-sync']);
-      const ownBox = parsed.flag('cloud') && !parsed.option('box');
-      if (parsed.flag('cloud') && (parsed.flag('deploy') || !(await hostExists()))) await deployHost();
+      const ownBox = !parsed.option('box');
+      if (parsed.flag('deploy') || !(await hostExists())) await deployHost();
       const code = await target.up({ from: parsed.option('from'), fromBase: ownBox });
 
       return code === 0 && ownBox && !parsed.flag('no-sync') ? sync(target, { full: false }) : code;
@@ -101,14 +98,12 @@ const commands: Record<string, Command> = {
     },
     { limit: { type: 'string' }, html: { type: 'boolean' }, 'check-links': { type: 'boolean' } }
   ),
-  down: onBox('', 'stop the box; its data stays (local: its volume; cloud: its snapshot)', (target) => target.down()),
-  delete: onBox('--cloud', 'stop a Cloudflare box and delete it with its snapshot and Worker', (target) =>
-    target.delete()
-  ),
+  down: onBox('', 'save the box to its snapshot and stop it; the next request wakes it', (target) => target.down()),
+  delete: onBox('', 'stop the box and delete it with its snapshot and Worker', (target) => target.delete()),
   deploy: {
     usage: '',
     help: "deploy the Cloudflare host, its image and the Slack router's address (wrangler.jsonc)",
-    options: SHARED,
+    options: {},
     run: async () => {
       await deployHost();
 
@@ -117,13 +112,12 @@ const commands: Record<string, Command> = {
   },
 };
 
-const NOTES = `every command takes:
-  --box <name>  local: default novu-box, its volume is <name>-data; local boxes publish the same host ports, so one
-                runs at a time. Cloud: default the current branch; the box is https://novu-box-<name>.<workers.dev>.
-  --cloud       the Cloudflare box. All boxes run in one host Worker; each has its own small Worker for its address.
-                \`up --cloud --deploy\` redeploys the host (after a change to docker/box), which applies to every box.
-                \`up --cloud --from <box>\` starts a new box from that box's latest snapshot instead of baking.
-                Without --box, \`up --cloud\` is this branch's box: a new one starts from \`base\` (when it has a
+const NOTES = `boxes run on Cloudflare: all of them in one host Worker, each with its own small Worker for its address.
+every command but deploy takes:
+  --box <name>  default the current branch; the box is https://novu-box-<name>.<workers.dev>.
+                \`up --deploy\` redeploys the host (after a change to docker/box), which applies to every box.
+                \`up --from <box>\` starts a new box from that box's latest snapshot instead of baking.
+                Without --box, \`up\` is this branch's box: a new one starts from \`base\` (when it has a
                 snapshot), then gets this checkout, committed or not; \`--no-sync\` skips that.`;
 
 await main('cli', () => runCommand('box', commands, { notes: NOTES }));

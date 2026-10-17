@@ -40,7 +40,7 @@ export async function doctor(): Promise<DoctorReport> {
   problems.push(...processes.flatMap((entry) => processProblem(entry) ?? []));
 
   const http: Record<string, number> = {};
-  const urls = { api: API_HEALTH, dashboard: 'http://127.0.0.1:4200/', bridge: 'http://127.0.0.1:4000/api/novu' };
+  const urls = { api: API_HEALTH, dashboard: 'http://127.0.0.1:18080/', bridge: 'http://127.0.0.1:4000/api/novu' };
   for (const [name, url] of Object.entries(urls)) {
     http[name] = await httpStatus(url);
     if (http[name] !== 200) problems.push(`${name} answered ${http[name] || 'nothing'} at ${url}`);

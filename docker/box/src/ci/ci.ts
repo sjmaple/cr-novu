@@ -4,8 +4,7 @@ import fs from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as z from 'zod';
 import { type CloudTarget, cloudTarget } from '../cli/cloud.ts';
-import { hostBoxes } from '../cli/cloud-http.ts';
-import { githubToken } from '../cli/target.ts';
+import { githubToken, hostBoxes } from '../cli/cloud-http.ts';
 import { runCommand } from '../node/commands.ts';
 import { fetchJson, HttpError } from '../node/http.ts';
 import { log, main } from '../node/main.ts';
@@ -126,13 +125,13 @@ async function applyHead(number: number, sha: string): Promise<number> {
           ? `⚠️ Novu Box applied \`${short}\` but isn't healthy: ${origin} (${plan}, took ${seconds} s)`
           : `✅ Novu Box ready: ${origin} (applied \`${short}\`, ${plan}, took ${seconds} s)`,
         ...(problems.length
-          ? ['', `Problems (\`${CLI} doctor --cloud --box ${box}\`):`, ...problems.map((problem) => `- ${problem}`)]
+          ? ['', `Problems (\`${CLI} doctor --box ${box}\`):`, ...problems.map((problem) => `- ${problem}`)]
           : []),
         '',
         `- Mailpit: ${origin}/mail`,
         `- Sign in as \`agent@novu.co\` with the Novu Box seed password from the password manager, or sign up with your own \`@novu.co\` address.`,
         `- Every push applies the new head here. The box sleeps after an hour without requests and wakes on the next one (about 40 s). Removing \`${LABEL}\` or closing the PR deletes it.`,
-        `- Logs: \`${CLI} logs --cloud --box ${box}\``,
+        `- Logs: \`${CLI} logs --box ${box}\``,
       ].join('\n')
     );
 
@@ -141,7 +140,7 @@ async function applyHead(number: number, sha: string): Promise<number> {
     const message = messageOf(error);
     log(`ERROR: ${message}`);
     const where =
-      error instanceof ApplyFailed ? `; the apply's log: \`${CLI} exec --cloud --box ${box} -- cat ${error.log}\`` : '';
+      error instanceof ApplyFailed ? `; the apply's log: \`${CLI} exec --box ${box} -- cat ${error.log}\`` : '';
     const [first = ''] = message.split('\n');
     await comment(
       number,

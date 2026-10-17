@@ -4,47 +4,50 @@ import os from 'node:os';
 import { join } from 'node:path';
 import * as z from 'zod';
 import { log } from '../node/main.ts';
-import { run } from '../node/process.ts';
+import { output, run } from '../node/process.ts';
 import { fromJson } from '../shared/contracts.ts';
-import { parseEnvFile } from '../shared/env-file.ts';
+import { messageOf } from '../shared/errors.ts';
 import { HOST, SECRETS } from '../shared/names.ts';
-import { HERE } from './docker.ts';
+import { hostExists } from './cloud-http.ts';
 
+const HERE = new URL('../..', import.meta.url).pathname;
 const WRANGLER = join(HERE, 'node_modules/.bin/wrangler');
-const CONFIG = join(os.homedir(), '.config/novu-box');
-const SLACK_ENV = process.env.BOX_SLACK_ENV ?? join(CONFIG, 'slack.env');
 const IMAGE_CONFIG = join(HERE, '.wrangler.box-image.json');
 const HostConfig = z.looseObject({ containers: z.array(z.looseObject({})) });
+const SecretList = z.array(z.object({ name: z.string() }));
+const HOST_ONLY_SECRETS = ['GITHUB_READ_TOKEN', 'CLOUDFLARE_API_TOKEN', 'SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET'];
+const OPTIONAL_SECRETS = new Set<string>(['NOVU_MANAGED_CLAUDE_API_KEY', 'BULL_MQ_PRO_NPM_TOKEN']);
 
-function readKeys(file: string, keys: ReadonlyArray<string>): Record<string, string> {
-  if (!fs.existsSync(file)) return {};
-  const env = parseEnvFile(fs.readFileSync(file, 'utf8'));
+function missingSecrets(names: ReadonlyArray<string>): { required: Array<string>; optional: Array<string> } {
+  const missing = [...SECRETS, ...HOST_ONLY_SECRETS].filter((name) => !names.includes(name));
 
-  return Object.fromEntries(keys.flatMap((key) => (env[key] ? [[key, env[key]]] : [])));
+  return {
+    required: missing.filter((name) => !OPTIONAL_SECRETS.has(name)),
+    optional: missing.filter((name) => OPTIONAL_SECRETS.has(name)),
+  };
 }
 
-// wrangler keeps a Worker's secrets between deploys, so a file here only adds or replaces them.
-function secretsFromFiles(): Record<string, string> {
-  const files: Array<[string, ReadonlyArray<string>]> = [
-    [join(HERE, '.env'), SECRETS],
-    [SLACK_ENV, ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET']],
-    [join(CONFIG, 'github.env'), ['GITHUB_READ_TOKEN']],
-    [join(CONFIG, 'cloudflare.env'), ['CLOUDFLARE_API_TOKEN']],
-  ];
-  const secrets: Record<string, string> = Object.assign({}, ...files.map(([file, keys]) => readKeys(file, keys)));
-  const names = Object.keys(secrets).join(', ');
-  log(names ? `updating the host's secrets: ${names}` : 'no secret files: the host keeps its secrets');
+async function checkSecrets(): Promise<void> {
+  if (!(await hostExists())) return;
+  const listed = await output(WRANGLER, ['secret', 'list', '--name', HOST, '--format', 'json'], { cwd: HERE }).catch(
+    (error: Error) => {
+      log(`WARN: couldn't list ${HOST}'s secrets: ${messageOf(error)}`);
 
-  return secrets;
+      return null;
+    }
+  );
+  if (listed === null) return;
+  const { required, optional } = missingSecrets(fromJson(SecretList).parse(listed).map(({ name }) => name));
+  for (const name of required)
+    log(`WARN: ${HOST} has no secret ${name}; set it in Cloudflare: \`npx wrangler secret put ${name}\` in docker/box`);
+  if (optional.length) log(`optional secrets ${HOST} doesn't have: ${optional.join(', ')}`);
 }
 
 export async function deployHost(): Promise<void> {
   const idle = process.env.BOX_IDLE_MINUTES;
   if (idle && !(Number(idle) > 0)) throw new Error(`BOX_IDLE_MINUTES=${idle}: a number of minutes, over 0`);
-  const secrets = secretsFromFiles();
+  await checkSecrets();
   const dir = fs.mkdtempSync(join(os.tmpdir(), 'box-deploy-'));
-  const secretsFile = join(dir, 'secrets.json');
-  fs.writeFileSync(secretsFile, JSON.stringify(secrets), { mode: 0o600 });
   try {
     await run(WRANGLER, ['deploy', '--dry-run', '--outdir', join(dir, 'thin'), '-c', 'wrangler.slack.jsonc'], {
       cwd: HERE,
@@ -54,8 +57,7 @@ export async function deployHost(): Promise<void> {
     const vars = idle ? ['--var', `IDLE_MINUTES:${idle}`] : [];
     log(`deploying ${HOST} with wrangler; this applies to every box`);
     const define = ['--define', `THIN_WORKER:${JSON.stringify(thin)}`];
-    const withSecrets = Object.keys(secrets).length ? ['--secrets-file', secretsFile] : [];
-    await run(WRANGLER, ['deploy', ...withSecrets, ...define, ...vars, ...onImage()], { cwd: HERE });
+    await run(WRANGLER, ['deploy', ...define, ...vars, ...onImage()], { cwd: HERE });
     await run(WRANGLER, ['deploy', '-c', 'wrangler.slack.jsonc'], { cwd: HERE });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

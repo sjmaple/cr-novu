@@ -73,6 +73,5 @@ COPY --link src/shared /opt/box/src/shared
 COPY --link src/node /opt/box/src/node
 COPY --link src/box /opt/box/src/box
 
-EXPOSE 3000 4200 4566 8025 8887 18080
-ENTRYPOINT ["tini", "--", "node", "/opt/box/src/box/main.ts"]
-CMD ["start"]
+# The host starts every container with its own entrypoint (START in src/cloud/container.ts, or the bake's).
+EXPOSE 18080

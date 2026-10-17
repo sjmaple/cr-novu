@@ -2,11 +2,23 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as z from 'zod';
 import { log } from '../node/main.ts';
-import { stopping } from '../node/process.ts';
+import { output, stopping } from '../node/process.ts';
 import { decode } from '../shared/contracts.ts';
 import { DOMAIN, EXIT_MARK, HOST } from '../shared/names.ts';
 
 export type Token = () => Promise<string>;
+
+let ownToken: Promise<string> | undefined;
+
+export function githubToken(): Promise<string> {
+  ownToken ??= process.env.GITHUB_TOKEN
+    ? Promise.resolve(process.env.GITHUB_TOKEN)
+    : output('gh', ['auth', 'token']).catch(() => {
+        throw new Error('needs GITHUB_TOKEN or a signed-in `gh` (gh auth login)');
+      });
+
+  return ownToken;
+}
 
 export interface FetchInit {
   readonly method?: 'GET' | 'POST' | 'PUT' | 'DELETE';

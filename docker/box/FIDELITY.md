@@ -7,7 +7,7 @@ what a PR tester would miss, and what closing it would take. Keep this list curr
 
 | Area | Staging / production | Box | What a PR tester misses | To close it |
 |---|---|---|---|---|
-| Queues | `QUEUE_BACKEND=sqs` on AWS SQS | `sqs_bullmq` on ElasticMQ (same SQS API) | SQS fair queues (per-org fairness), duplicate or out-of-order delivery, throttling, 4-day retention | Not possible locally; staging load tests |
+| Queues | `QUEUE_BACKEND=sqs` on AWS SQS | `sqs_bullmq` on ElasticMQ (same SQS API) | SQS fair queues (per-org fairness), duplicate or out-of-order delivery, throttling, 4-day retention | Not possible in the box; staging load tests |
 | Long delays (> 900 s) | EventBridge Scheduler fires them into SQS | Held in BullMQ (`sqs_bullmq`) | The EventBridge path | No emulator fires schedules |
 | Large queue messages (> 256 KB) | Offloaded to S3 | Fail: the offload client reuses `SQS_ENDPOINT` for S3 | Payload offload | Code change: a separate S3 endpoint for offload |
 | BullMQ | Pro (`@taskforcesh/bullmq-pro`, org groups) where BullMQ is used | Open-source BullMQ, `NOVU_MANAGED_SERVICE` unset | Little: staging jobs run on SQS | `BULL_MQ_PRO_NPM_TOKEN` at bake |
@@ -44,7 +44,7 @@ what a PR tester would miss, and what closing it would take. Keep this list curr
 The `bridge` process runs `playground/nextjs`, which serves workflows and three self-hosted agents with the
 checkout's `@novu/framework`, signed
 with the Development secret key, through the same SSRF guard as a customer's bridge (allow-listed as
-`bridge.box.internal`). Agents reply through the public API URL, which Caddy also serves inside the box.
+`bridge.box.internal`). Agents reply through the public API URL, the box's own address (see "Calls to its own address").
 
 | Area | Difference |
 |---|---|
@@ -64,7 +64,7 @@ with the Development secret key, through the same SSRF guard as a customer's bri
 | Clerk | Dev instance of the `novu-box` app, shared by all boxes | Separate app with copied settings; test mode on; allowlist `*@novu.co`; passkeys count as 2FA; `force_organization_selection`; one shared seed user and org, re-linked on every bake (org ID changes) |
 | Stripe | `Novu Box` sandbox with the 12 staging prices copied | One shared customer per bake; `stripe listen` can drop events; demo tax head office |
 | LaunchDarkly | Staging's project and environment, read-only SDK key | Box orgs get staging's default rules like any new customer (rate limiting on, Agents tab visible) |
-| Managed-Claude quota | `MAX_NOVU_MANAGED_CLAUDE_CONVERSATIONS=200` | The default is 10 conversations per org per month, which repeated test runs use up. To test the cap, start a box with `-e MAX_NOVU_MANAGED_CLAUDE_CONVERSATIONS=2`; the 100,000-token cap per conversation is unchanged |
+| Managed-Claude quota | `MAX_NOVU_MANAGED_CLAUDE_CONVERSATIONS=200` | The default is 10 conversations per org per month, which repeated test runs use up. To test the cap, lower it in `image/config/box.env` (every box, after `box deploy`); the 100,000-token cap per conversation is unchanged |
 
 ## Novu-internal and third-party features
 
@@ -73,7 +73,7 @@ with the Development secret key, through the same SSRF guard as a customer's bri
 | Novu's own account (`NOVU_API_KEY`, `NOVU_SECRET_API_KEY`, `VITE_NOVU_APP_ID`) | Invite, invite-accepted and password-reset emails are skipped; the header Inbox bell (outside the workflow editor) gets 422; `/v1/novu/context` returns 500, so the Copilot Slack connect banner fails (it also needs Novu's hosted Copilot agent and its Slack app) | These are production keys; the box uses none |
 | Keyless trial (`KEYLESS_ORGANIZATION_ID`, `KEYLESS_USER_EMAIL`) | Try-before-signup Inbox and keyless Connect don't work | Creating a keyless environment also needs `NOVU_MANAGED_CLAUDE_API_KEY` and the flags `IS_KEYLESS_ENVIRONMENT_CREATION_ENABLED` and `IS_DEMO_MANAGED_CLAUDE_ENABLED`; that key also adds a Novu-managed Claude integration to every new Development environment while that flag is on |
 | Blueprints (`BLUEPRINT_CREATOR`) | Template gallery of the old `/blueprints` API is empty | The current dashboard doesn't use it |
-| Sanity CMS | Changelog cards and agent-template deep links fail (CORS) | `http://localhost:14200` isn't in the project's CORS origins |
+| Sanity CMS | Changelog cards and agent-template deep links fail (CORS) | The boxes' `workers.dev` addresses aren't in the project's CORS origins |
 | AI (`AI_LLM_*`, `CONTEXT_DEV_API_KEY`) | AI features fail, including the Copilot chat panel in the workflow editor; self-hosted agents work (Claude with the Anthropic key, scripted models without it) | Needs an OpenAI key with a spend limit. `AI_LLM_PROVIDER=anthropic` only moves the main model (and the default `claude-sonnet-4-20250514` is retired); the input guard, moderation (`omni-moderation-latest`) and tool selection always call OpenAI with the same `AI_LLM_API_KEY`. With an OpenAI key, the self-hosted agents could run on it too, but managed agents still need the Anthropic key (Claude only). `OPENAI_API_KEY` isn't read by the API or worker, only by the CLI |
 | Managed agents (`NOVU_MANAGED_CLAUDE_API_KEY`) | Without the key they fail. With it, only the Novu-managed Claude integration is seeded (not bring-your-own-key `anthropic` or `anthropic-aws`) | Bring-your-own keys would be stored in Mongo, and the box keeps no secrets under `/data` |
 | Managed-agent MCP servers | Not seeded | Every catalog server needs OAuth with a real account (DCR or the provider's vault), and the Novu-managed integration drops provider-vault ones; connecting a DCR server by hand from the dashboard isn't tried yet |
@@ -81,15 +81,15 @@ with the Development secret key, through the same SSRF guard as a customer's bri
 | Custom domains (`DOMAIN_CONNECT_PRIVATE_KEY`) | Domain Connect fails | No key; could generate a box-only one |
 | Monitoring and marketing (New Relic, Sentry, Segment, Mixpanel, HubSpot, Intercom, Plain) | Off; `/v1/telemetry/measure` returns 404 | Box traffic must not reach real dashboards |
 
-## Hosting on Cloudflare (`--cloud`)
+## Hosting on Cloudflare
 
-What differs, or is still a workaround, when the box runs on Cloudflare (`src/cloud/host.ts`) instead of locally.
+What differs, or is still a workaround, because the box runs on Cloudflare (`src/cloud/host.ts`).
 
 | Area | Staging / production | Box on Cloudflare | What a PR tester misses | To close it |
 |---|---|---|---|---|
 | Addresses | Dashboard and API on separate hosts (`dashboard.novu.co`, `api.novu.co`) | One `workers.dev` address per box; the box routes by path (Caddy `:18080`) | CORS and cross-origin cookie behavior | A domain with a host per part (NV-9059) |
 | New boxes | - | All containers in one host Worker (`novu-box-hub`); each box adds a small Worker for its `workers.dev` address (`novu-box-<box>`, about 30 s to deploy). A new box starts from another box's snapshot in about 2 min | - | Drop the per-box Workers once there's a domain (NV-9059) |
-| GitHub token | Not in the app's environment | A bake or apply holds a token (on Cloudflare the host's read-only `GITHUB_READ_TOKEN`, locally the caller's) and gives it only to git's fetches, for github.com only. PR code runs as the same user while it installs, so a compromised dependency's install script in a PR could read the read-only token | - | Fetch in a step of its own before any PR code runs, or the Worker adds the token to requests to GitHub on the way out |
+| GitHub token | Not in the app's environment | A bake or apply holds a token (the host's read-only `GITHUB_READ_TOKEN`, or the caller's when the host has none) and gives it only to git's fetches, for github.com only. PR code runs as the same user while it installs, so a compromised dependency's install script in a PR could read the read-only token | - | Fetch in a step of its own before any PR code runs, or the Worker adds the token to requests to GitHub on the way out |
 | Calls to its own address | Internal | `API_ROOT_URL` and S3 links are the public address, so the box's calls to itself go out to the internet and back | Extra latency on those calls | Route them back inside the Worker |
 | Uptime | Always on | Sleeps after 1 h without requests and wakes in 35 to 50 s; a Cloudflare host restart loses changes since the last save | The first request after a sleep waits | - |
 | Snapshot storage | - | Each box keeps its snapshots until 30 days after its last use; unknown whether they count toward the 50 GB account image limit, or what they cost | - | Ask Cloudflare |
@@ -102,8 +102,7 @@ The `workers.dev` setup is a workaround for having no domain. With one, the host
    hostname to the box's Durable Object, so the thin per-box Workers (`novu-box-<box>`) and their deploys go away.
 2. **A host per part,** one wildcard level deep for the free certificate: `<box>.<domain>` (dashboard),
    `<box>-api.<domain>`, `<box>-ws.<domain>`, `<box>-s3.<domain>`, `<box>-mail.<domain>`. The dashboard then calls the
-   API cross-origin, as in production, so CORS and cookies are tested again; the path routing in the Caddyfile stays
-   only for local boxes.
+   API cross-origin, as in production, so CORS and cookies are tested again, and the path routing in the Caddyfile goes.
 3. **One base snapshot** (`Box("base")`, baked from `next` weekly) that every new box starts from, within the one class.
 4. **Not** `novu.co` (production cookies), `novu.sh` (customer `npx novu dev` tunnels) or `novu-staging.co` (shares
    a parent domain with staging, possible Clerk cookie clash).

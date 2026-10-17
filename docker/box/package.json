@@ -2,7 +2,7 @@
   "name": "novu-box",
   "private": true,
   "type": "module",
-  "description": "Novu Box: the Novu Cloud stack in one container, locally or on Cloudflare. Not part of the pnpm workspace.",
+  "description": "Novu Box: the Novu Cloud stack in one container on Cloudflare. Not part of the pnpm workspace.",
   "engines": {
     "node": ">=22.18"
   },

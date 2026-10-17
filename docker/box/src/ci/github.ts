@@ -1,6 +1,6 @@
 
 import * as z from 'zod';
-import { githubToken } from '../cli/target.ts';
+import { githubToken } from '../cli/cloud-http.ts';
 import { fetchJson, HttpError, type JsonInit } from '../node/http.ts';
 import { IssueComment, IssueEvent, Permission, type PullRequestEvent } from '../shared/contracts.ts';
 

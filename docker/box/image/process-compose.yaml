@@ -224,7 +224,7 @@ processes:
     readiness_probe:
       http_get:
         host: 127.0.0.1
-        port: 4200
+        port: 18080
         path: /
       period_seconds: 1
       failure_threshold: 30

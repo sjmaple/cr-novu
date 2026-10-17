@@ -14,7 +14,7 @@ export const SEED = {
 
 function secret(name: string): string {
   const value = process.env[name];
-  if (!value) throw new Error(`${name} is not set; pass --env-file docker/box/.env`);
+  if (!value) throw new Error(`${name} is not set; set it as a novu-box-hub secret in Cloudflare`);
 
   return value;
 }

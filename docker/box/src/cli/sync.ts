@@ -6,7 +6,7 @@ import { gitIdentity, mergedTree } from '../node/git.ts';
 import { log } from '../node/main.ts';
 import { exitCode, output, type RunOptions } from '../node/process.ts';
 import { BoxState, decode } from '../shared/contracts.ts';
-import type { Target } from './target.ts';
+import type { CloudTarget } from './cloud.ts';
 
 const BUNDLE_IN_BOX = '/data/run/sync.bundle';
 const SYNC_REF = 'refs/worktree/box-sync';
@@ -14,7 +14,7 @@ const MAX_BUNDLE_MB = 25;
 
 type Git = (args: ReadonlyArray<string>, options?: RunOptions) => Promise<string>;
 
-export async function sync(target: Target, { full }: { readonly full: boolean }): Promise<number> {
+export async function sync(target: CloudTarget, { full }: { readonly full: boolean }): Promise<number> {
   await target.ready();
   const root = await output('git', ['rev-parse', '--show-toplevel']);
   const git: Git = (args, options = {}) => output('git', args, { cwd: root, ...options });

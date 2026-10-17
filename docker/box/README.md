@@ -4,10 +4,10 @@ One container that runs the Novu Cloud stack (enterprise API, worker, socket wor
 data stores, so a PR can be tried end to end before it merges. Where it differs from staging, and why, is in
 [FIDELITY.md](./FIDELITY.md).
 
-The image holds tools only. The Novu checkout, `node_modules`, builds and database files live under `/data`
-(a named volume locally, a snapshot later), so one image serves every box:
+Boxes run on Cloudflare Containers. The image holds tools only. The Novu checkout, `node_modules`, builds and
+database files live under `/data`, which a box keeps in its snapshot while it sleeps, so one image serves every box:
 
-1. `box bake` builds a "golden" `/data` from a ref (about 12 minutes).
+1. `box bake` builds a "golden" `/data` from a ref (13 to 16 minutes).
 2. `box start` boots from it (about 20 seconds to a healthy API).
 3. `box apply` puts a PR, or your checkout's changes, on a running box and rebuilds only what they change (about
    20 seconds to 6 minutes).
@@ -19,8 +19,8 @@ in its own `package.json`, outside the pnpm workspace; Node runs the `.ts` files
 | Folder | What it is |
 |---|---|
 | `src/box` | The commands inside the box (`src/box/main.ts`: `bake`, `start`, `apply`, `doctor`, ...), and `sink.ts` |
-| `src/cli` | The CLI on your machine (`src/cli/main.ts`), which drives a box locally or on Cloudflare (see "From your machine" below) |
-| `src/cloud` | The Cloudflare host Worker, box Workers and Slack router (see "On Cloudflare") |
+| `src/cli` | The CLI on your machine (`src/cli/main.ts`), which drives the boxes (see "From your machine" below) |
+| `src/cloud` | The Cloudflare host Worker, box Workers and Slack router (see "How it runs on Cloudflare") |
 | `src/ci` | The pull request workflow's tasks (see "Per pull request") |
 | `src/shared` | What they share: names, the JSON they exchange (zod schemas, `contracts.ts`), and the token check |
 | `src/node` | What the Node sides share: child processes, `poll`, JSON over HTTP, the command table, `log` |
@@ -49,38 +49,48 @@ process-compose supervises everything under tini (`image/process-compose.yaml`):
 | `stripe` | `stripe listen`, forwarding sandbox webhooks to the API |
 | `bridge` | `next start` of `playground/nextjs`: a self-hosted Novu app with code-first workflows and agents (`src/app/novu/`) on the checkout's `@novu/framework`, at `http://bridge.box.internal:4000/api/novu` |
 
-Settings shared by every box are in `image/config/box.env`. Secrets come only from the `docker run` environment.
+Settings shared by every box are in `image/config/box.env`. The host adds each box's address and secrets to its
+environment when it starts it (`boxEnv` in `src/cloud/container.ts`).
 
-## Ports
+## Address
 
-| Container | Host (examples below) | Service |
-|---|---|---|
-| 4200 | 14200 | Dashboard |
-| 3000 | 13000 | API |
-| 8887 | 18887 | Socket worker (Inbox realtime) |
-| 8025 | 18025 | Mailpit UI and API, under `/mail` |
-| 4566 | 4566 | S3 (presigned upload URLs point here) |
-| 18080 | 18080 | All of the above on one address, by path: `/v1` `/v2` `/.well-known` API, `/ws` socket, `/novu-box` S3, `/mail` Mailpit, the rest the dashboard. Cloudflare boxes use it, because `workers.dev` gives a box one name |
+A box has one address, `https://novu-box-<box>.cli-shortener.workers.dev`, which reaches port 18080 in the box.
+Caddy (`image/config/Caddyfile`) routes it by path: `/v1` `/v2` `/.well-known` to the API, `/ws` to the socket
+worker, `/novu-box` to S3 (presigned upload URLs point here), `/mail` to Mailpit, `/cdn` to uploaded files, and the
+rest to the dashboard. The dashboard calls the API same-origin there: unlike production, CORS isn't exercised.
 
 ## Secrets
 
-Copy `secrets.example.env` to `docker/box/.env` (gitignored and dockerignored) and fill it in with
-preview-only values. A box runs PR code, and that code can read its environment, so:
+Every secret is a Worker secret of the host, `novu-box-hub`, and is set or changed only in Cloudflare: in the
+dashboard (Workers → novu-box-hub → Settings → Variables and Secrets) or with `npx wrangler secret put <NAME>` in
+`docker/box`. Nobody keeps them on their machine. `box deploy` deploys code only (wrangler keeps a Worker's secrets
+between deploys); it first reads the host's secret names, never their values, and warns about each required one
+below that the host lacks. Set them all once, when the host is first deployed: the host can't create boxes'
+Workers without `CLOUDFLARE_API_TOKEN`.
+
+The host passes the box secrets (`SECRETS` in `src/shared/names.ts`) into each box's environment; no box gets the
+host-only ones. A box runs PR code, and that code can read its environment, so:
 
 - never use production keys, or Novu's own account (`NOVU_API_KEY`);
 - use a staging key only when it can't change anything (the LaunchDarkly SDK key only reads flags);
 - never name a secret `VITE_*`: those end up in the dashboard's public `index.html`;
 - don't run boxes for PRs from forks.
 
-| Secret | Service | Used by |
-|---|---|---|
-| `LAUNCH_DARKLY_SDK_KEY` | LaunchDarkly project `default`, environment `dev` (staging's) | API, worker |
-| `CLERK_SECRET_KEY` | Clerk app `novu-box`, development instance | Bake (seeds the user and org), API |
-| `BOX_SEED_PASSWORD` | The seed user's dashboard password, from the password manager | Bake (sets it on the Clerk user) |
-| `STRIPE_API_KEY` | Stripe sandbox `Novu Box` | Bake (puts the org on Team), `stripe listen`, API |
-| `GITHUB_TOKEN` | GitHub, read access to `novuhq/novu` and the enterprise submodule | `bake` and `apply` only; pass it with `-e`, it's never written to disk (the CLI takes it from `gh auth token`). Only the git fetches and the CI lookup get it, never the installs, builds or apps |
-| `BULL_MQ_PRO_NPM_TOKEN` (optional) | Taskforce.sh registry | Bake; without it the box runs open-source BullMQ |
-| `NOVU_MANAGED_CLAUDE_API_KEY` (optional) | Anthropic, a workspace with a monthly spend limit | Start (runs thalamus and seeds the `box-managed` agent), API, bridge app (real models for its agents) |
+| Secret | Boxes get it | Service | Used by |
+|---|---|---|---|
+| `LAUNCH_DARKLY_SDK_KEY` | yes | LaunchDarkly project `default`, environment `dev` (staging's) | API, worker |
+| `CLERK_SECRET_KEY` | yes | Clerk app `novu-box` (`app_3KN3iEbdMZ8XqqRpi3hIC6wzzLE`), development instance | Bake (seeds the user and org), API |
+| `BOX_SEED_PASSWORD` | yes | The seed user's dashboard password (`openssl rand -base64 24`), shared through the password manager | Bake (sets it on the Clerk user) |
+| `STRIPE_API_KEY` | yes | Stripe sandbox `Novu Box` (`acct_1UODPmFKxZbFmwjX`), `sk_test_...` | Bake (puts the org on Team), `stripe listen`, API |
+| `NOVU_MANAGED_CLAUDE_API_KEY` (optional) | yes | Anthropic, a workspace with a monthly spend limit, never Novu's production key | Start (runs thalamus and seeds the `box-managed` agent), API, bridge app (real models for its agents) |
+| `BULL_MQ_PRO_NPM_TOKEN` (optional) | yes | Taskforce.sh registry | Bake; without it the box runs open-source BullMQ |
+| `GITHUB_READ_TOKEN` | no | GitHub, fine-grained, `novuhq`, repositories `novu` and `packages-enterprise`, Contents and Checks read | Every bake's and apply's git fetches and CI lookup (never the installs, builds or apps), instead of the caller's token, so no push-capable token reaches a box. Without it, people's calls use their own `gh` token, and CI can't apply |
+| `CLOUDFLARE_API_TOKEN` | no | Cloudflare, Account, Workers Scripts, Edit, on the Novu account only | The `/__box/boxes` routes, which create and delete boxes' Workers |
+| `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | no | Novu Bot (see "Slack") | The Slack router; without them, boxes get no Slack |
+
+A new fine-grained GitHub token needs an org owner's approval (the current one expires 2027-10-17). Until it's
+approved it reads only public `novuhq/novu`: applying a PR works, but a bake (so the weekly rebake, and a box
+started when `base` has no snapshot) and an apply that moves `.source` fail at the enterprise submodule.
 
 The dashboard signs in as `agent@novu.co` with `BOX_SEED_PASSWORD`. All boxes share the Clerk
 development instance and its one seed org. Every bake gives that org the same Novu ID (`SEED.novuOrgId` in
@@ -101,38 +111,9 @@ list `email_code` in `first_factors`, and `auth_config.test_mode` must be `false
 
 ## Use it
 
-`node docker/box/src/cli/main.ts up` does all of this for you (see "From your machine"); by hand:
-
-Build the image (seconds after the first build):
-
-```sh
-docker build -t novu-box:local -f docker/box/image/Dockerfile docker/box
-```
-
-Bake from `next`, or from any branch, tag or SHA:
-
-```sh
-GITHUB_TOKEN=$(gh auth token) docker run -d --name novu-box-bake -e GITHUB_TOKEN \
-  --env-file docker/box/.env -v novu-box-data:/data novu-box:local bake next
-docker logs -f novu-box-bake   # ends with "baked next at <sha>"; then: docker rm novu-box-bake
-```
-
-Start the box:
-
-```sh
-docker run -d --name novu-box --env-file docker/box/.env -v novu-box-data:/data \
-  -p 13000:3000 -p 14200:4200 -p 18887:8887 -p 4566:4566 -p 18025:8025 novu-box:local
-```
-
-Open the dashboard at http://localhost:14200 and Mailpit at http://localhost:18025/mail.
-
-Put a PR (or a branch, or a full SHA) on the running box:
-
-```sh
-GITHUB_TOKEN=$(gh auth token) docker exec -e GITHUB_TOKEN novu-box node /opt/box/src/box/main.ts apply 12821
-```
-
-`apply` merges the PR onto the baked commit (like CI's merge ref) and stops if the two conflict. It then
+Everything goes through the CLI on your machine (see "From your machine"). In the box, `box apply` (which `sync`
+and the PR workflow run) puts a PR, a branch, a full SHA or your checkout on a running box: it merges it onto the
+baked commit (like CI's merge ref) and stops if the two conflict. It then
 reinstalls if the lockfile changed, builds the projects `nx affected` reports, redeploys the API and worker,
 runs migrations and restarts what changed. A PR that changes `@novu/framework`, `@novu/agent-toolkit` or
 `playground/nextjs` also rebuilds the bridge app (about 45 s), restarts it and syncs it again, so the PR's
@@ -149,32 +130,34 @@ touched as well as its own changes.
 
 ### From your machine: `src/cli/main.ts`
 
-`node docker/box/src/cli/main.ts` (or `npm run box --` in `docker/box`) drives a box from your checkout. Run it
-from anywhere in the checkout; `--box <name>` picks the box (default `novu-box`, with the volume `novu-box-data`).
-Local boxes publish the same host ports, so one runs at a time. It builds the image `novu-box:local` when it's
-missing; after a change to `image/` or `src/box`, `docker rmi novu-box:local` and `up` again.
+`node docker/box/src/cli/main.ts` (or `npm run box --` in `docker/box`) drives the boxes from your checkout. Run
+it from anywhere in the checkout; `--box <name>` picks the box, by default the current branch's. You need `gh`
+signed in as someone with push access to `novuhq/novu` (the box's Worker checks it on every control call). To
+deploy the host you also need `npx wrangler login` on the Novu Cloudflare account and Docker, which wrangler builds
+the image with. No secrets (see "Secrets").
 
 | Command | What it does |
 |---|---|
-| `node docker/box/src/cli/main.ts up` | Starts the box: creates it if needed, after baking `next` into an empty volume (about 12 minutes). Waits until `doctor` passes |
+| `node docker/box/src/cli/main.ts up` | Starts the box and waits until `doctor` passes: deploys the host if it isn't there, has the host create the box's Worker, then wakes the box from its snapshot or, the first time, bakes `next`. Without `--box`, a new box starts from `base` and gets your checkout (see "How it runs on Cloudflare") |
 | `node docker/box/src/cli/main.ts sync` | Puts this checkout on the box, committed or not, and rebuilds what it changes. `--full` as for `apply` |
 | `node docker/box/src/cli/main.ts doctor` | Whether the box is fit to test on, as JSON; `problems` says what isn't, and it exits 1 if any |
 | `node docker/box/src/cli/main.ts mail [search \| id]` | What the box sent, from its Mailpit: the newest messages (email, and SMS, push and chat from the sink), a search (`to:a@b.c`, `subject:Welcome`, `tag:sms`), or one message with its headers, links, Mailpit's HTML check (which email clients break on what) and a `view` URL to screenshot; `--html`, `--check-links`, `--limit <n>` |
 | `node docker/box/src/cli/main.ts logs [process]` | The last 200 lines (`--tail <n>`) of one process, or of all of them merged, as `name \| LEVEL context: message`; `--errors` keeps warnings and errors, `--follow` streams new lines. An unknown name lists the processes |
 | `node docker/box/src/cli/main.ts exec -- <command>` | Runs a command in the box's checkout (`/data/novu`) |
-| `node docker/box/src/cli/main.ts down` | Stops the box, giving its processes up to 180 s to stop in order. Its volume, and so its data, stays; `up` starts it again |
-| `node docker/box/src/cli/main.ts delete --cloud` | Deletes a Cloudflare box (see below) |
-| `node docker/box/src/cli/main.ts deploy` | Deploys the Cloudflare host (see below) |
+| `node docker/box/src/cli/main.ts down` | Saves the box to its snapshot and stops it; the next request, or `up`, wakes it with its data |
+| `node docker/box/src/cli/main.ts delete` | Stops the box and deletes it with its snapshot and Worker (see below) |
+| `node docker/box/src/cli/main.ts deploy` | Deploys the host, its image and the Slack router (see below) |
 
 `sync` puts the checkout on the box as `apply` puts a PR: it commits HEAD plus every change, untracked files
 included and ignored files not, into one commit, and sends it as a git bundle. The box merges it onto the baked
-commit and runs the same plan. Your own index and staging stay as they are. Measured on a running box:
+commit and runs the same plan (times are under "How it runs on Cloudflare"). Your own index and staging stay as
+they are.
 
-| Change | Plan | Time |
-|---|---|---|
-| None since the last sync | nothing | 2 s |
-| An API file, plus a new untracked file | build the API | 30 to 55 s |
-| A library (`@novu/application-generic`) | build the API and worker | about 55 s |
+| Change | Plan |
+|---|---|
+| None since the last sync | nothing |
+| An API file, plus a new untracked file | build the API |
+| A library (`@novu/application-generic`) | build the API and worker |
 
 Untracked files are sent only inside the top-level folders the repo already has (`apps`, `libs`, `packages`, ...).
 Untracked files elsewhere, such as scratch folders, tool state, or a screenshot or `.env` at the root, stay on your
@@ -182,19 +165,11 @@ machine; `sync` names them in its first line. `sync` stops before sending more t
 reach, and names the biggest changed files. It sends the enterprise submodule's commit, not uncommitted changes
 inside `.source`.
 
-### On Cloudflare: `--cloud`
+### How it runs on Cloudflare
 
-The same commands with `--cloud` run the box on Cloudflare Containers. Every box's container runs in one host
-Worker, `novu-box-hub` (`src/cloud/host.ts`, one Durable Object per box), and each box has its own small Worker
-for its address, `novu-box-<box>` (`src/cloud/thin.ts`, no container), at `https://novu-box-<box>.cli-shortener.workers.dev`;
-`--box` defaults to the current branch. That address is the box's one address (port 18080, see Ports), so the
-dashboard calls the API same-origin there: unlike production, CORS isn't exercised.
-
-You need `npx wrangler login` on the Novu Cloudflare account, `gh` signed in as someone with push access to
-`novuhq/novu` (the box's Worker checks it on every control call). No secret files: every secret is kept in
-Cloudflare, as the host's Worker secrets (see "Secrets on Cloudflare" below). `up --cloud` deploys the host if it
-isn't there, has the host create the box's Worker, then wakes the box from its snapshot or, the first
-time, bakes `next`.
+Every box's container runs in one host Worker, `novu-box-hub` (`src/cloud/host.ts`, one Durable Object per box),
+and each box has its own small Worker for its address, `novu-box-<box>` (`src/cloud/thin.ts`, no container), at
+`https://novu-box-<box>.cli-shortener.workers.dev` (see "Address").
 
 The host and its image are `wrangler.jsonc`, the Slack router's address `wrangler.slack.jsonc`; the boxes aren't in
 them (the host creates their Workers at runtime). `box deploy` runs `wrangler deploy` for both with your wrangler
@@ -202,12 +177,12 @@ login, adding the thin Worker's bundle, which the host uploads for every box. It
 `node_modules/.bin/wrangler`): 4.68 rejects this config's `exports` (Durable Objects on SQLite without
 `migrations`), the container's `images` and `scheduling_policy: "durable_object"`. wrangler builds the image (for
 amd64) from what `image/Dockerfile.dockerignore` lets in and pushes it only when it changed.
-`up --cloud --deploy` (or `box deploy`) redeploys the host (after a change to `docker/box`), which applies to every box; with the
+`up --deploy` (or `box deploy`) redeploys the host (after a change to `docker/box`), which applies to every box; with the
 same image, running boxes usually keep running, but once a box's container restarted from its last snapshot
 minutes after a deploy, losing what wasn't saved (an applied PR). The likely cause: a deploy restarts every Durable
 Object, which drops the container's inactivity timeout until the next alarm; the Box now sets it again as it
 restarts. Until that is proven, `down` a box worth keeping before deploying. A save that a deploy cuts off resumes
-the box at its next alarm. `delete --cloud` has the host stop a box, forget its snapshot and delete its Worker; when
+the box at its next alarm. `delete` has the host stop a box, forget its snapshot and delete its Worker; when
 the box doesn't stop, its Worker stays and `delete` fails.
 
 After an hour without requests the box saves itself to a snapshot and stops; the next request gets a "waking up"
@@ -231,16 +206,16 @@ state (`/__box/state`) doesn't count as a request. While a box saves, its addres
 | The same, seen three times | 4 to 6 min (inside the start); cause unknown |
 | `box deploy` of a code change with the same image | 12 to 16 s; running boxes usually keep running (see above). Nothing changed: 5 s |
 
-`up --cloud --box <new> --from <box>` starts a new box from another box's latest snapshot instead of baking: all
+`up --box <new> --from <box>` starts a new box from another box's latest snapshot instead of baking: all
 boxes share one Durable Object class, which is how Cloudflare documents snapshot sharing. Keep a `base` box, baked
 from `next`, to start new boxes from, and leave it asleep: every sleep gives it a new snapshot, and twice the first
-box started from a snapshot waited 4 to 6 minutes. `up --cloud` without `--box` is your branch's box: a new one
+box started from a snapshot waited 4 to 6 minutes. `up` without `--box` is your branch's box: a new one
 starts from `base`, then gets your checkout, committed or not (as `sync`; `--no-sync` skips it). A branch that
 doesn't contain `base`'s commit may conflict; rebase it on `next`.
 
 Cloudflare deletes a snapshot 30 days after it was made or last restored, and nothing extends it. Wake `base`
-(`up --cloud --box base`, then `down`) at least every 30 days, or rebake it weekly (`delete --cloud --box base`, then
-`up --cloud --box base`). The weekly rebake also moves `base` onto the current image, since a snapshot only restores
+(`up --box base`, then `down`) at least every 30 days, or rebake it weekly (`delete --box base`, then
+`up --box base`). The weekly rebake also moves `base` onto the current image, since a snapshot only restores
 on the image it was taken on. A box whose snapshot can't be restored forgets it and is `lost`; `up` says so, and the
 next `up` bakes.
 
@@ -249,14 +224,14 @@ Limits for now: each sleep leaves a snapshot image in the account's registry tha
 image is untested with boxes running. A `sync` whose rebuild runs longer than 5 minutes (a playground change, with
 `pnpm install`) ends with `fetch failed` and leaves the bundle unapplied; apply it in the background and follow
 its log:
-`node docker/box/src/cli/main.ts exec --cloud -- sh -c 'nohup node /opt/box/src/box/main.ts apply --bundle /data/run/sync.bundle > /data/logs/apply-sync.log 2>&1 &'`.
+`node docker/box/src/cli/main.ts exec -- sh -c 'nohup node /opt/box/src/box/main.ts apply --bundle /data/run/sync.bundle > /data/logs/apply-sync.log 2>&1 &'`.
 
 #### Per pull request: the `box` label
 
 `.github/workflows/novu-box.yml` gives a PR in `novuhq/novu` its own box, `pr-<number>`, while we battle-test
 boxes on demand only:
 
-- Adding the `box` label starts the box from `base` (as `up --cloud --box pr-<n> --from base`; it bakes `next`
+- Adding the `box` label starts the box from `base` (as `up --box pr-<n> --from base`; it bakes `next`
   when `base` has no snapshot) and applies the PR's head commit. Only someone with write access to `novuhq/novu`
   can start one: the workflow checks who added the label, on every run, and otherwise only says so in the PR. PRs
   from forks get no box (`pull_request` gives them no OIDC token; the workflow doesn't use `pull_request_target`).
@@ -273,7 +248,7 @@ boxes on demand only:
   rebakes `base` from `next` and saves it, which also keeps its snapshot from expiring. Both run by hand with
   "Run workflow" (`cleanup`, `rebake`).
 
-`docker/box/src/ci/ci.ts` does all of it, through the CLI's cloud target (`src/cli/cloud.ts`) as `--cloud` does;
+`docker/box/src/ci/ci.ts` does all of it, through the CLI's cloud target (`src/cli/cloud.ts`);
 the workflow runs `npm ci` in `docker/box` first. The workflow holds no secret. It signs in to the boxes with its
 GitHub Actions OIDC token (audience `novu-box`), which `src/shared/auth.ts` verifies in the Workers (RS256 against
 GitHub's keys; issuer, audience, time, repository `novuhq/novu` and workflow `novu-box.yml`), next to the
@@ -288,47 +263,22 @@ push-capable GitHub tokens people use. Boxes' Workers are created and deleted on
 
 The Slack router's Worker, `novu-box-slack` (`wrangler.slack.jsonc`), deploys with the host.
 
-##### Secrets on Cloudflare
-
-Every secret lives in the host's Worker secrets, and the host passes the box secrets (`SECRETS`, the ones in
-`secrets.example.env`) into each box's environment. wrangler keeps a Worker's secrets between deploys, so
-`box deploy` needs no files. To set or change secrets, put them in these files on your machine and run
-`box deploy`: it sends the ones it finds (from a file only you can read, removed after; never printed) and
-leaves the others as they are. Set them all once, when the host is first deployed; the host can't create
-boxes' Workers without `CLOUDFLARE_API_TOKEN`.
-
-| File | Secrets |
-|---|---|
-| `docker/box/.env` | The box secrets (see "Secrets"), which boxes get in their environment |
-| `~/.config/novu-box/slack.env` | Novu Bot's `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` (see "Slack"); without them, boxes get no Slack |
-
-The host also holds two keys of its own, which no box gets (they aren't in `SECRETS`):
-
-| File | Key | What for |
-|---|---|---|
-| `~/.config/novu-box/github.env` | `GITHUB_READ_TOKEN`: fine-grained, `novuhq`, repositories `novu` and `packages-enterprise`, Contents and Checks read | Every box's git fetches and CI lookup, instead of the caller's token, so no push-capable token reaches a box. Without it, people's calls use their own token, and CI can't apply |
-| `~/.config/novu-box/cloudflare.env` | `CLOUDFLARE_API_TOKEN`: Account, Workers Scripts, Edit, on the Novu account only | The `/__box/boxes` routes, which create and delete boxes' Workers |
-
-A new fine-grained GitHub token needs an org owner's approval (the current one expires 2027-10-17). Until it's
-approved it reads only public `novuhq/novu`: applying a PR works, but a bake (so the weekly rebake, and a box
-started when `base` has no snapshot) and an apply that moves `.source` fail at the enterprise submodule.
-
 #### Slack: Novu Bot in `#novu-box`
 
-Cloud boxes' agents can be used from the company Slack through one app, Novu Bot, in `#novu-box` and in DMs with
+Boxes' agents can be used from the company Slack through one app, Novu Bot, in `#novu-box` and in DMs with
 the bot. The Slack router (`src/cloud/slack/router.ts`; each box's part is `src/cloud/slack/box.ts`) runs in the
 host Worker as one more Durable Object, at its own address `novu-box-slack` (a small Worker like a box's, deployed
 with the host); it holds the real bot token and signing secret and stands between Slack and every box; no box ever
 sees them.
 
 - Slack is on when the host has Novu Bot's credentials (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, host secrets
-  which no box gets; see "Secrets on Cloudflare"). Then every box gets `SLACK_API_URL`, the router's `/api/`.
+  which no box gets; see "Secrets"). Then every box gets `SLACK_API_URL`, the router's `/api/`.
   `box deploy` always deploys `novu-box-slack`; its address and the channel are in `wrangler.jsonc`'s `vars`. Novu Bot's Events, Interactivity
   and `/novu-box` request URLs are `https://novu-box-slack.cli-shortener.workers.dev/slack`.
 - Once a box is up, and again when its agents change (a `sync`), the host gives each of the bridge app's agents a
   Slack integration (`box-slack-<agent>`) and a workspace connection through the box's API, with a bot token
   and signing secret the router made up for that box. The router posts "<box> ready · Talk to: …" in
-  `#novu-box`; `delete --cloud` removes it and the box's tokens.
+  `#novu-box`; `delete` removes it and the box's tokens.
 - In Slack, pick a box and agent with a Talk to button (or `/novu-box <box> [agent]`, or the bot's Home tab),
   then @mention Novu Bot in `#novu-box` or DM it. A thread keeps its box and agent; the main DM follows your
   pick. Replies show as "<box> · <agent>". The agents answer only people linked to a subscriber, so the first
@@ -372,7 +322,7 @@ agent on the Novu-managed Claude integration (Claude Haiku, only the `bash` tool
 It calls Anthropic for real; Novu's own caps still apply (100,000 tokens per conversation, and 200 managed-Claude
 conversations per org per month instead of the default 10, see FIDELITY.md).
 
-Other commands, run with `docker exec novu-box node /opt/box/src/box/main.ts <command>`:
+Other commands of the box, run with `node docker/box/src/cli/main.ts exec -- node /opt/box/src/box/main.ts <command>`:
 
 - `status` lists processes. Logs are in `/data/logs/process-compose.log`.
 - `doctor` and `logs [process]`, which the CLI runs. `logs` reads `/data/logs/process-compose.log`, where
@@ -409,8 +359,6 @@ Other commands, run with `docker exec novu-box node /opt/box/src/box/main.ts <co
 
 ## Troubleshooting
 
-- **The bake fails at "first boot" with ClickHouse `NOT_ENOUGH_SPACE`:** Docker's disk is full. A baked volume
-  is about 6 GB; remove old box volumes and dangling images.
 - **The dashboard signs in but shows the wrong org, or none:** the box was baked before the seed org had a fixed
   ID (October 2026). Bake it again.
 - **Mailpit has no SMS, push or chat:** check `sink` in `status`, and that the step's integration is one of

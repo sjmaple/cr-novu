@@ -15,7 +15,7 @@ import type { SlackAnswer } from './types.ts';
 export const SLACK_API = 'https://slack.com/api/';
 export const SLACK_FILES = 'https://files.slack.com/';
 export const ROUTER_NAME = 'Novu Box';
-export const NO_BOX = 'No Novu Box is running: start one with `box up --cloud`.';
+export const NO_BOX = 'No Novu Box is running: start one with `box up`.';
 export const NOT_SLACK = 'not what Slack sends';
 
 export interface RouterCore {

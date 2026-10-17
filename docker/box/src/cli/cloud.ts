@@ -15,7 +15,6 @@ import {
   readExec,
   type Token,
 } from './cloud-http.ts';
-import type { BoxCall, Target, UpOptions } from './target.ts';
 
 // A first bake takes 11 to 14 minutes on Cloudflare; a wake about 35 s, but the first restore of a snapshot 4 to 6
 // minutes (the Slack router waits as long).
@@ -47,7 +46,27 @@ export interface CloudOptions {
   readonly deadline?: number;
 }
 
-export interface CloudTarget extends Target {
+export interface UpOptions {
+  readonly from?: string | undefined;
+  readonly fromBase?: boolean;
+  readonly ref?: string;
+}
+
+export interface BoxCall {
+  readonly github?: boolean;
+}
+
+export interface CloudTarget {
+  readonly name: string;
+  readonly mailUrl: string;
+  readonly up: (options: UpOptions) => Promise<number>;
+  readonly down: () => Promise<number>;
+  readonly delete: () => Promise<number>;
+  readonly ready: () => Promise<void>;
+  readonly box: (args: ReadonlyArray<string>, options?: BoxCall) => Promise<number>;
+  readonly boxOutput: (args: ReadonlyArray<string>, options?: BoxCall) => Promise<string>;
+  readonly exec: (cmd: ReadonlyArray<string>) => Promise<number>;
+  readonly put: (file: string, path: string) => Promise<void>;
   readonly state: () => Promise<BoxStatus | null>;
   readonly readyFor: (options: { readonly reachable: boolean }) => Promise<void>;
   readonly settled: (seconds: number) => Promise<DoctorReport | null>;
@@ -83,7 +102,7 @@ export function cloudTarget(options: CloudOptions): CloudTarget {
 
   const stream = async (body: Exec, capture: boolean) => {
     const response = await call('/exec', { method: 'POST', body: JSON.stringify(body) });
-    if (response.status === 409) throw new Error(`${worker} isn't running: \`box up --cloud --box ${box}\``);
+    if (response.status === 409) throw new Error(`${worker} isn't running: \`box up --box ${box}\``);
 
     return readExec(response, capture).catch((error: Error) => {
       throw new Error(`${worker} /exec: ${error.message}`);
@@ -170,7 +189,7 @@ export function cloudTarget(options: CloudOptions): CloudTarget {
     const current = await state();
     if (!current || needsBake(current))
       throw new Error(
-        `${worker} ${current ? `isn't set up (${current.phase})` : "doesn't exist"}: \`box up --cloud --box ${box}\``
+        `${worker} ${current ? `isn't set up (${current.phase})` : "doesn't exist"}: \`box up --box ${box}\``
       );
     if (current.phase === 'running' && current.running && !reachable) return;
     if (!current.running || current.phase === 'saving') {
@@ -185,7 +204,7 @@ export function cloudTarget(options: CloudOptions): CloudTarget {
     const query = new URLSearchParams({ ref });
     const snapshot = await startingSnapshot(from, fromBase, ref);
     if (snapshot) query.set('from', snapshot);
-    if (!(await hostExists())) throw new Error(`${HOST} isn't deployed; deploy it with \`box up --cloud --deploy\``);
+    if (!(await hostExists())) throw new Error(`${HOST} isn't deployed; deploy it with \`box deploy\``);
     log(`deploying ${worker}`);
     await hostBoxes(`boxes/${box}`, z.unknown(), { method: 'PUT', token });
     const answer = await call(`/up?${query}`, { method: 'POST' });

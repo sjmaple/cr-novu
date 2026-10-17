@@ -186,7 +186,7 @@ export class Box extends DurableObject<HostEnv> {
 
   #whenRunning(request: Request, f: () => Promise<Response>): Promise<Response> {
     return this.#unlessSaving(request, async () =>
-      this.#container.running ? f() : text('the box is not running: `box up --cloud`\n', 409)
+      this.#container.running ? f() : text('the box is not running: `box up`\n', 409)
     );
   }
 
@@ -207,10 +207,10 @@ export class Box extends DurableObject<HostEnv> {
     if (!this.#container.running) {
       if (life.phase === 'lost')
         return text(
-          `This box's snapshot ${life.lost.id} couldn't be restored (snapshots expire 30 days after they were made or last restored). Bake it again: run \`box up --cloud\`.\n`,
+          `This box's snapshot ${life.lost.id} couldn't be restored (snapshots expire 30 days after they were made or last restored). Bake it again: run \`box up\`.\n`,
           503
         );
-      if (life.phase !== 'asleep') return text('This box is not set up yet: run `box up --cloud`.\n', 503);
+      if (life.phase !== 'asleep') return text('This box is not set up yet: run `box up`.\n', 503);
       await this.#wake(url.origin, life.snapshot);
 
       return waking(request);
