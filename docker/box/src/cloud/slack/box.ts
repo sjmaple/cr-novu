@@ -40,7 +40,7 @@ interface ApiInit {
   readonly body?: object;
 }
 
-const enabled = (box: SlackBox) => Boolean(box.env.SLACK_ROUTER_URL);
+const enabled = (box: SlackBox) => Boolean(box.env.SLACK_BOT_TOKEN);
 const router = (box: SlackBox) => box.env.ROUTER.get(box.env.ROUTER.idFromName('router'));
 
 export function slackEnv(box: SlackBox): Record<string, string> {

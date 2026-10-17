@@ -191,15 +191,14 @@ for its address, `novu-box-<box>` (`src/cloud/thin.ts`, no container), at `https
 dashboard calls the API same-origin there: unlike production, CORS isn't exercised.
 
 You need `npx wrangler login` on the Novu Cloudflare account, `gh` signed in as someone with push access to
-`novuhq/novu` (the box's Worker checks it on every control call), `docker/box/.env` (its secrets go to the host)
-and, to deploy the host, `~/.config/novu-box/cloudflare.env` (see "Per pull request"). `up --cloud` deploys the
-host if it isn't there, has the host create the box's Worker, then wakes the box from its snapshot or, the first
+`novuhq/novu` (the box's Worker checks it on every control call). No secret files: every secret is kept in
+Cloudflare, as the host's Worker secrets (see "Secrets on Cloudflare" below). `up --cloud` deploys the host if it
+isn't there, has the host create the box's Worker, then wakes the box from its snapshot or, the first
 time, bakes `next`.
 
 The host and its image are `wrangler.jsonc`, the Slack router's address `wrangler.slack.jsonc`; the boxes aren't in
 them (the host creates their Workers at runtime). `box deploy` runs `wrangler deploy` for both with your wrangler
-login, adding the secrets (from a file only you can read, removed after; never printed), the Slack settings and the
-thin Worker's bundle, which the host uploads for every box. It needs wrangler 4.150 (the package's own,
+login, adding the thin Worker's bundle, which the host uploads for every box. It needs wrangler 4.150 (the package's own,
 `node_modules/.bin/wrangler`): 4.68 rejects this config's `exports` (Durable Objects on SQLite without
 `migrations`), the container's `images` and `scheduling_policy: "durable_object"`. wrangler builds the image (for
 amd64) from what `image/Dockerfile.dockerignore` lets in and pushes it only when it changed.
@@ -289,13 +288,26 @@ push-capable GitHub tokens people use. Boxes' Workers are created and deleted on
 
 The Slack router's Worker, `novu-box-slack` (`wrangler.slack.jsonc`), deploys with the host.
 
-The host holds two keys of its own, as Worker secrets that no box gets (they aren't in `SECRETS`).
-`box deploy` reads them, like Novu Bot's, from files on the machine that deploys the host:
+##### Secrets on Cloudflare
+
+Every secret lives in the host's Worker secrets, and the host passes the box secrets (`SECRETS`, the ones in
+`secrets.example.env`) into each box's environment. wrangler keeps a Worker's secrets between deploys, so
+`box deploy` needs no files. To set or change secrets, put them in these files on your machine and run
+`box deploy`: it sends the ones it finds (from a file only you can read, removed after; never printed) and
+leaves the others as they are. Set them all once, when the host is first deployed; the host can't create
+boxes' Workers without `CLOUDFLARE_API_TOKEN`.
+
+| File | Secrets |
+|---|---|
+| `docker/box/.env` | The box secrets (see "Secrets"), which boxes get in their environment |
+| `~/.config/novu-box/slack.env` | Novu Bot's `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` (see "Slack"); without them, boxes get no Slack |
+
+The host also holds two keys of its own, which no box gets (they aren't in `SECRETS`):
 
 | File | Key | What for |
 |---|---|---|
 | `~/.config/novu-box/github.env` | `GITHUB_READ_TOKEN`: fine-grained, `novuhq`, repositories `novu` and `packages-enterprise`, Contents and Checks read | Every box's git fetches and CI lookup, instead of the caller's token, so no push-capable token reaches a box. Without it, people's calls use their own token, and CI can't apply |
-| `~/.config/novu-box/cloudflare.env` | `CLOUDFLARE_API_TOKEN`: Account, Workers Scripts, Edit, on the Novu account only | The `/__box/boxes` routes; `box deploy` fails without it |
+| `~/.config/novu-box/cloudflare.env` | `CLOUDFLARE_API_TOKEN`: Account, Workers Scripts, Edit, on the Novu account only | The `/__box/boxes` routes, which create and delete boxes' Workers |
 
 A new fine-grained GitHub token needs an org owner's approval (the current one expires 2027-10-17). Until it's
 approved it reads only public `novuhq/novu`: applying a PR works, but a bake (so the weekly rebake, and a box
@@ -309,9 +321,9 @@ host Worker as one more Durable Object, at its own address `novu-box-slack` (a s
 with the host); it holds the real bot token and signing secret and stands between Slack and every box; no box ever
 sees them.
 
-- `box deploy` gives the host Novu Bot's credentials when `~/.config/novu-box/slack.env`
-  (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`) is on your machine (host secrets, which no box gets), deploys
-  `novu-box-slack`, and gives every box `SLACK_API_URL`, the router's `/api/`. Novu Bot's Events, Interactivity
+- Slack is on when the host has Novu Bot's credentials (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, host secrets
+  which no box gets; see "Secrets on Cloudflare"). Then every box gets `SLACK_API_URL`, the router's `/api/`.
+  `box deploy` always deploys `novu-box-slack`; its address and the channel are in `wrangler.jsonc`'s `vars`. Novu Bot's Events, Interactivity
   and `/novu-box` request URLs are `https://novu-box-slack.cli-shortener.workers.dev/slack`.
 - Once a box is up, and again when its agents change (a `sync`), the host gives each of the bridge app's agents a
   Slack integration (`box-slack-<agent>`) and a workspace connection through the box's API, with a bot token

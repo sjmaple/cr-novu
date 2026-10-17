@@ -3,7 +3,6 @@ export const HOST = 'novu-box-hub';
 export const ROUTER = 'novu-box-slack';
 export const COMPATIBILITY_DATE = '2026-09-29';
 export const DOMAIN = 'cli-shortener.workers.dev';
-export const SLACK_CHANNEL = 'C0C9PHBUDR6';
 
 export function boxWorker(box: string): string {
   return `novu-box-${box}`;
