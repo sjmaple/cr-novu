@@ -141,6 +141,7 @@ processes:
       restart: exit_on_failure
 
   # Same as the production images: pnpm deploy output plus dist, run by pm2-runtime in cluster mode.
+  # NODE_COMPILE_CACHE keeps V8's compiled code on /data, so a restart doesn't recompile the unchanged modules.
   # A fresh PM2_HOME per start: on a restart the old pm2-runtime is still shutting down, and on exit it
   # deletes the sockets in its PM2_HOME, which would orphan a new one sharing the folder.
   api:
@@ -148,6 +149,7 @@ processes:
     working_dir: /data/deploy/api
     environment:
       - PORT=3000
+      - NODE_COMPILE_CACHE=/data/node-compile-cache/api
     depends_on:
       migrate:
         condition: process_completed_successfully
@@ -168,6 +170,7 @@ processes:
     working_dir: /data/deploy/worker
     environment:
       - PORT=3004
+      - NODE_COMPILE_CACHE=/data/node-compile-cache/worker
     depends_on:
       migrate:
         condition: process_completed_successfully

@@ -154,7 +154,8 @@ export function cloudTarget(options: CloudOptions): CloudTarget {
       },
       {
         timeoutMs: until - Date.now(),
-        everyMs: 10_000,
+        // Every doctor run costs the box a Node start; a bake takes minutes anyway.
+        everyMs: seconds >= READY_WITHIN_SECONDS.baking ? 10_000 : 2000,
         orElse: () => {
           if (orLast) return report;
           throw new Error(`${worker} isn't ready (${when}): ${report?.problems.join('; ') ?? 'no doctor report'}`);

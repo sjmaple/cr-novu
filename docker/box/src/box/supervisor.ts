@@ -35,7 +35,7 @@ export async function stopRunning(names: ReadonlyArray<string>): Promise<void> {
 
       return !left.length;
     },
-    { timeoutMs: 180_000, what: () => `still running after the stop: ${left.join(' ')}` }
+    { timeoutMs: 180_000, everyMs: 200, what: () => `still running after the stop: ${left.join(' ')}` }
   );
 }
 

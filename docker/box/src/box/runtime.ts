@@ -70,7 +70,7 @@ export async function waitForHttp(url: string, seconds: number, signal?: AbortSi
 
       return status >= 200 && status < 300;
     },
-    { timeoutMs: seconds * 1000, what: `${url} not healthy`, signal }
+    { timeoutMs: seconds * 1000, everyMs: 250, what: `${url} not healthy`, signal }
   );
 }
 
