@@ -9,6 +9,7 @@ import { syncBridge } from './bridge.ts';
 import {
   build,
   buildBridge,
+  type Changes,
   dashboardBundleChanged,
   deployApp,
   pnpmInstall,
@@ -35,6 +36,7 @@ interface ApplyPlan {
   readonly restart: ReadonlyArray<string>;
   // The deployed apps whose locked dependencies changed.
   readonly reinstall: ReadonlyArray<string>;
+  readonly changes: Changes | undefined;
 }
 
 export interface ApplyOptions {
@@ -70,8 +72,7 @@ async function applyLocked({ ref = '', bundle, full: fullAsked, baseline, token 
   });
   if (baseline && target.sha !== target.head)
     throw new Error(`${target.ref} doesn't contain the baked ${baked.sha.slice(0, 10)}; bake the box again instead`);
-  const changed = (await output('git', ['diff', '--name-only', base, target.sha])).split('\n').filter(Boolean);
-  const files = [...new Set([...changed, ...(interrupted?.files ?? [])])];
+  const files = [...new Set([...(await changedFiles(base, target.sha)), ...(interrupted?.files ?? [])])];
   log(`${files.length} files changed between ${base.slice(0, 10)} and ${target.sha.slice(0, 10)}`);
   if (interrupted) log(`the last apply (${interrupted.sha.slice(0, 10)}) didn't finish; its files are planned too`);
   if (files.some((file) => file.startsWith('docker/box/')))
@@ -85,7 +86,9 @@ async function applyLocked({ ref = '', bundle, full: fullAsked, baseline, token 
     if (files.includes('.source'))
       await gitWithToken(token, ['submodule', 'update', '--init', '--depth', '1', '.source']);
   });
-  const plan = await step('plan', () => (full ? Promise.resolve(fullPlan()) : planFor(files, base, target.sha)));
+  const plan = await step('plan', () =>
+    full ? Promise.resolve(fullPlan()) : planFor(files, base, target.sha, Boolean(interrupted))
+  );
   const listed = (names: ReadonlyArray<string>) => names.join(' ') || 'nothing';
   log(
     `plan: install ${plan.install ? 'yes' : 'no'}, build ${listed(plan.build)}, restart ${listed(plan.restart)}` +
@@ -111,7 +114,12 @@ async function applyLocked({ ref = '', bundle, full: fullAsked, baseline, token 
 // package.json.
 const INSTALL_FILES = ['pnpm-lock.yaml', 'pnpm-workspace.yaml', '.source'];
 
-async function planFor(files: ReadonlyArray<string>, from: string, to: string): Promise<ApplyPlan> {
+async function planFor(
+  files: ReadonlyArray<string>,
+  from: string,
+  to: string,
+  interrupted: boolean
+): Promise<ApplyPlan> {
   const source = files.includes('.source');
   const install = files.some((file) => INSTALL_FILES.includes(file));
   // nx can't see inside the submodule, so a `.source` bump affects nothing: it reaches every code process.
@@ -121,6 +129,10 @@ async function planFor(files: ReadonlyArray<string>, from: string, to: string): 
   const restart = new Set([...build.flatMap((project) => PROJECT_PROCESSES[project] ?? []), ...relocked]);
   for (const [prefix, name] of Object.entries(PATH_PROCESSES))
     if (files.some((file) => file.startsWith(prefix))) restart.add(name);
+  const changes =
+    install || interrupted
+      ? undefined
+      : { files, affected, modified: new Set(await changedFiles(from, to, ['--diff-filter=M'])) };
 
   return {
     install,
@@ -128,6 +140,7 @@ async function planFor(files: ReadonlyArray<string>, from: string, to: string): 
     enterprise: install || files.some((file) => file.startsWith('enterprise/packages/')),
     restart: runnable(source ? CODE_PROCESSES : restart),
     reinstall: Object.keys(DEPLOYED_APPS).filter((name) => source || relocked.includes(name)),
+    changes,
   };
 }
 
@@ -138,7 +151,12 @@ function fullPlan(): ApplyPlan {
     enterprise: true,
     restart: runnable(CODE_PROCESSES),
     reinstall: Object.keys(DEPLOYED_APPS),
+    changes: undefined,
   };
+}
+
+async function changedFiles(from: string, to: string, options: ReadonlyArray<string> = []): Promise<Array<string>> {
+  return (await output('git', ['diff', '--name-only', ...options, from, to])).split('\n').filter(Boolean);
 }
 
 async function affectedProjects(files: ReadonlyArray<string>): Promise<Array<string>> {
@@ -165,16 +183,19 @@ async function appsToBuild(
   return [...new Set(apps)];
 }
 
-async function applyPlan({ install, build: projects, enterprise, restart, reinstall }: ApplyPlan): Promise<void> {
+async function applyPlan({ install, build: projects, enterprise, restart, reinstall, changes }: ApplyPlan) {
   const stoppedDuringBuild = restart.filter((name) => name !== 'dashboard');
   await stopRunning(stoppedDuringBuild);
   if (install) await step('pnpm install', pnpmInstall);
-  if (projects.length) await step(`build ${projects.join(' ')}`, () => build(projects, { enterprise }));
+  if (projects.length) await step(`build ${projects.join(' ')}`, () => build(projects, { enterprise, changes }));
   if (restart.includes('bridge')) await step('build bridge', buildBridge);
   const redeploy = Object.keys(DEPLOYED_APPS).filter((name) => restart.includes(name));
+  const workspaceChanged = !changes || changes.files.some((file) => !file.startsWith('apps/'));
   if (redeploy.length)
     await step(`deploy ${redeploy.join(' ')}`, () =>
-      allSettled(redeploy.map((name) => deployApp(name, { dependenciesChanged: reinstall.includes(name) })))
+      allSettled(
+        redeploy.map((name) => deployApp(name, { dependenciesChanged: reinstall.includes(name), workspaceChanged }))
+      )
     );
   await step('migrate', migrate);
   if (restart.includes('dashboard')) prepareDashboard();

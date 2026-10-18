@@ -1,12 +1,28 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import { relative } from 'node:path';
+import { dirname, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { log } from '../node/main.ts';
 import { Applied, Baked, fromJson, NestConfig, NxGraph, PackageJson, PnpmPackages } from '../shared/contracts.ts';
 import { messageOf } from '../shared/errors.ts';
 import { APPLIED, BAKED, BULLMQ_PRO, DATA, DEPLOY, NX, REPO, RUN } from './paths.ts';
 import { DEPLOYED_APPS } from './processes.ts';
-import { output, readJson, run, vars } from './runtime.ts';
+import { allSettled, output, readJson, run, step, vars } from './runtime.ts';
+
+const APPS = ['@novu/api-service', '@novu/worker', '@novu/dashboard'];
+const FRAMEWORK = '@novu/framework';
+
+// What an apply changed, so that only that is built. A bake, `--full`, an install and an apply after an
+// interrupted one build everything instead.
+export interface Changes {
+  readonly files: ReadonlyArray<string>;
+  // The changed files that existed before and still do.
+  readonly modified: ReadonlySet<string>;
+  readonly affected: ReadonlyArray<string>;
+}
+
+type Graph = Awaited<ReturnType<typeof projectGraph>>;
 
 export async function pnpmInstall(): Promise<void> {
   await run('pnpm', ['install', '--frozen-lockfile', '--store-dir', `${DATA}/pnpm-store`], {
@@ -29,10 +45,54 @@ function packageJson(dir: string) {
   return readJson(`${dir}/package.json`, PackageJson) ?? {};
 }
 
-export async function build(projects: ReadonlyArray<string>, { enterprise = true } = {}): Promise<void> {
-  const nx = (args: ReadonlyArray<string>) => run(NX, args, { env: { ...vars, NODE_OPTIONS: '' } });
+const nx = (args: ReadonlyArray<string>) => run(NX, args, { env: { ...vars, NODE_OPTIONS: '' } });
+
+export async function build(
+  projects: ReadonlyArray<string>,
+  { enterprise = true, changes }: { enterprise?: boolean; changes?: Changes | undefined } = {}
+): Promise<void> {
+  const own = APPS.filter((project) => projects.includes(project));
+  const typesChanged = await buildLibraries(projects, own, enterprise, changes);
+  const apps: Array<Promise<void>> = [];
+  if (own.includes('@novu/worker')) apps.push(buildNestApp('worker', changes, false));
+  if (own.includes('@novu/api-service')) apps.push(buildNestApp('api', changes, typesChanged));
+  await allSettled(apps);
+  if (own.includes('@novu/dashboard'))
+    await nx(['run', '@novu/dashboard:build', '--excludeTaskDependencies', '--', '--sourcemap', 'false']);
+}
+
+// Returns whether a library's declarations may have changed, which the API's metadata reads.
+async function buildLibraries(
+  projects: ReadonlyArray<string>,
+  own: ReadonlyArray<string>,
+  enterprise: boolean,
+  changes: Changes | undefined
+): Promise<boolean> {
+  // nx affected lists every project a change reaches, through root files too.
+  if (changes?.affected.every((project) => APPS.includes(project))) return false;
   const graph = await projectGraph();
-  const own = ['@novu/api-service', '@novu/worker', '@novu/dashboard'].filter((project) => projects.includes(project));
+  const libs = libraryClosure(graph, projects, own, enterprise);
+  const owned = (file: string) =>
+    Object.values(graph.nodes).some(({ data: { root } }) => root !== '.' && file.startsWith(`${root}/`));
+  if (changes?.files.every(owned))
+    return buildChangedLibraries(
+      graph,
+      libs.filter((lib) => changes.affected.includes(lib)),
+      changes.files
+    );
+  if (libs.length)
+    await nx(['run-many', '-t', 'build', `--projects=${libs.join(',')}`, '--excludeTaskDependencies', '--parallel=4']);
+
+  return true;
+}
+
+// The libraries the projects run on, which nx's cache replays when unchanged.
+function libraryClosure(
+  graph: Graph,
+  projects: ReadonlyArray<string>,
+  own: ReadonlyArray<string>,
+  enterprise: boolean
+): Array<string> {
   const first = new Set(projects.filter((project) => !own.includes(project)));
   for (const project of own) {
     const root = graph.nodes[project]?.data.root;
@@ -48,26 +108,195 @@ export async function build(projects: ReadonlyArray<string>, { enterprise = true
     for (const { target } of graph.dependencies[project] ?? []) visit(target);
   };
   for (const project of first) visit(project);
-  const libs = [...closure].filter((project) => {
+
+  return [...closure].filter((project) => {
     const node = graph.nodes[project];
 
     return Boolean(node?.data.targets?.build) && (enterprise || !node?.data.root.startsWith('enterprise/packages/'));
   });
-  if (libs.length)
-    await nx(['run-many', '-t', 'build', `--projects=${libs.join(',')}`, '--excludeTaskDependencies', '--parallel=4']);
-  const apps: Array<Promise<void>> = [];
-  if (own.includes('@novu/worker'))
-    apps.push(nx(['run', '@novu/worker:build', '--excludeTaskDependencies', '--', '-c', withoutTypeCheck('worker')]));
-  if (own.includes('@novu/api-service'))
-    apps.push(
-      nx(['run', '@novu/api-service:build-metadata', '--excludeTaskDependencies']).then(() =>
-        nx(['run', '@novu/api-service:build', '--excludeTaskDependencies', '--', '-c', withoutTypeCheck('api')])
-      )
-    );
-  const failed = (await Promise.allSettled(apps)).find((result) => result.status === 'rejected');
-  if (failed) throw failed.reason;
-  if (own.includes('@novu/dashboard'))
-    await nx(['run', '@novu/dashboard:build', '--excludeTaskDependencies', '--', '--sourcemap', 'false']);
+}
+
+// Builds the libraries the files are in, then each library depending on them whose output can change with them:
+// tsc compiles file by file, so a library it builds reads its dependencies' declarations (.d.ts), not their code;
+// a bundler copies their code in. Returns whether any declarations changed.
+async function buildChangedLibraries(
+  graph: Graph,
+  libs: ReadonlyArray<string>,
+  files: ReadonlyArray<string>
+): Promise<boolean> {
+  const root = (lib: string) => graph.nodes[lib]?.data.root ?? lib;
+  const below = dependenciesOf(graph);
+  const touched = new Set(libs.filter((lib) => files.some((file) => file.startsWith(`${root(lib)}/`))));
+  const rebuilt = new Set<string>();
+  const typesChanged = new Set<string>();
+  const dirty = (lib: string) =>
+    touched.has(lib) ||
+    [...below(lib)].some((dep) => typesChanged.has(dep) || (rebuilt.has(dep) && !compilesFileByFile(root(lib))));
+  const pending = new Set(libs);
+  while (pending.size) {
+    const batch = nextBatch(pending, dirty, below);
+    if (!batch.length) continue;
+    const declared = new Map(batch.map((lib) => [lib, declarations(root(lib))]));
+    await buildBatch(batch, batch.includes(FRAMEWORK) && frameworkTypesUnread(touched, below));
+    for (const lib of batch) {
+      pending.delete(lib);
+      rebuilt.add(lib);
+      if (declarations(root(lib)) !== declared.get(lib)) typesChanged.add(lib);
+    }
+  }
+  const kept = libs.filter((lib) => !rebuilt.has(lib));
+  log(
+    `libraries rebuilt: ${[...rebuilt].join(' ') || 'none'}; declarations changed: ${[...typesChanged].join(' ') || 'none'}${kept.length ? `; kept (nothing they compile against changed): ${kept.join(' ')}` : ''}`
+  );
+
+  return typesChanged.size > 0;
+}
+
+// Drops the pending libraries that turned out clean and returns the dirty ones to build next. nx orders a batch
+// by its dependencies; one that waits for a library outside the batch waits a round.
+function nextBatch(
+  pending: Set<string>,
+  dirty: (lib: string) => boolean,
+  below: (project: string) => ReadonlySet<string>
+): Array<string> {
+  const before = pending.size;
+  const waits = (lib: string) => [...below(lib)].some((dep) => pending.has(dep));
+  for (const lib of pending) if (!dirty(lib) && !waits(lib)) pending.delete(lib);
+  let batch = [...pending].filter(dirty);
+  for (let size = -1; size !== batch.length; ) {
+    size = batch.length;
+    batch = batch.filter((lib) => [...below(lib)].every((dep) => !pending.has(dep) || batch.includes(dep)));
+  }
+  // A dependency cycle: build what's left as nx would.
+  if (!batch.length && pending.size === before) return [...pending];
+
+  return batch;
+}
+
+async function buildBatch(batch: ReadonlyArray<string>, frameworkCodeOnly: boolean): Promise<void> {
+  const viaNx = batch.filter((lib) => !(frameworkCodeOnly && lib === FRAMEWORK));
+  if (viaNx.length)
+    await nx(['run-many', '-t', 'build', `--projects=${viaNx.join(',')}`, '--excludeTaskDependencies', '--parallel=4']);
+  if (frameworkCodeOnly) await step('build @novu/framework without declarations', buildFrameworkCode);
+}
+
+function dependenciesOf(graph: Graph): (project: string) => ReadonlySet<string> {
+  const known = new Map<string, Set<string>>();
+
+  return (project) => {
+    const cached = known.get(project);
+    if (cached) return cached;
+    const found = new Set<string>();
+    const queue = [project];
+    for (const current of queue)
+      for (const { target } of graph.dependencies[current] ?? [])
+        if (graph.nodes[target] && target !== project && !found.has(target)) {
+          found.add(target);
+          queue.push(target);
+        }
+    known.set(project, found);
+
+    return found;
+  };
+}
+
+function compilesFileByFile(root: string): boolean {
+  const scripts = Object.entries(packageJson(`${REPO}/${root}`).scripts ?? {})
+    .filter(([name]) => /^(pre)?build(:|$)/.test(name))
+    .map(([, script]) => script)
+    .join(' ');
+
+  return /\btsc\b/.test(scripts) && !/\b(tsup|rollup|vite|esbuild|webpack)\b|\bnode\s/.test(scripts);
+}
+
+function declarations(root: string): string {
+  const hash = createHash('sha1');
+  for (const out of ['dist', 'build']) {
+    const dir = `${REPO}/${root}/${out}`;
+    if (!fs.existsSync(dir)) continue;
+    const files = fs
+      .readdirSync(dir, { recursive: true, encoding: 'utf8' })
+      .filter((file) => /\.d\.[cm]?ts$/.test(file))
+      .sort();
+    for (const file of files) hash.update(`${out}/${file}\0`).update(fs.readFileSync(`${dir}/${file}`));
+  }
+
+  return hash.digest('hex');
+}
+
+// Nothing in the box type-checks against @novu/framework but the libraries tsc builds, so it can skip its
+// declarations (90 of its 92 s) unless a library changed in this apply compiles against them. The old ones stay.
+function frameworkTypesUnread(touched: ReadonlySet<string>, below: (project: string) => ReadonlySet<string>): boolean {
+  const readers = [...touched].filter((lib) => lib !== FRAMEWORK && below(lib).has(FRAMEWORK));
+
+  return !readers.length && fs.existsSync(`${REPO}/packages/framework/dist/cjs/index.d.cts`);
+}
+
+async function buildFrameworkCode(): Promise<void> {
+  // tsup bundles its config next to it, then imports tsup from there: it needs the framework's node_modules.
+  const config = `${REPO}/packages/framework/node_modules/.cache/box-tsup.config.ts`;
+  fs.mkdirSync(dirname(config), { recursive: true });
+  fs.writeFileSync(
+    config,
+    `import configs from '${REPO}/packages/framework/tsup.config.ts';\n` +
+      `export default configs.map((config) => ({ ...config, dts: false, clean: ['!**/*.d.{ts,cts,mts}'] }));\n`
+  );
+  await run('node_modules/.bin/tsup', ['--config', config], {
+    cwd: `${REPO}/packages/framework`,
+    env: { ...vars, NODE_OPTIONS: '', NODE_ENV: 'production' },
+  });
+}
+
+// SWC compiles each file on its own, so compiling only an app's changed sources gives what `nest build` would. A
+// library change compiles none; the API then regenerates its metadata, which reads the libraries' types, only
+// when their declarations changed.
+async function buildNestApp(app: 'api' | 'worker', changes: Changes | undefined, typesChanged: boolean): Promise<void> {
+  const project = app === 'api' ? '@novu/api-service' : '@novu/worker';
+  const sources = changes ? changedSources(app, changes) : null;
+  if (!sources) {
+    if (app === 'api') await nx(['run', `${project}:build-metadata`, '--excludeTaskDependencies']);
+    await nx(['run', `${project}:build`, '--excludeTaskDependencies', '--', '-c', withoutTypeCheck(app)]);
+
+    return;
+  }
+  const metadata = app === 'api' && (sources.length > 0 || typesChanged);
+  if (metadata) await step('api metadata', generateApiMetadata);
+  const files = metadata ? [...sources, 'src/metadata.ts'] : sources;
+  if (!files.length) return log(`${app}: no source to compile`);
+  await step(`compile ${app} ${files.join(' ')}`, () =>
+    run('node', [fileURLToPath(new URL('nest-swc.ts', import.meta.url)), ...files], {
+      cwd: `${REPO}/apps/${app}`,
+      env: { ...vars, NODE_OPTIONS: '' },
+    })
+  );
+}
+
+const TEST_FILE = /\.(spec|e2e|e2e-ee)\.ts$/;
+
+// The app's changed sources, or null when compiling only them might not give what `nest build` would: a new,
+// deleted or renamed file, a declaration file, a changed config (the app's, or the root tsconfig.json its
+// tsconfig extends), or no earlier build. Tests aren't built.
+function changedSources(app: string, { files, modified }: Changes): Array<string> | null {
+  const dir = `apps/${app}/`;
+  if (files.includes('tsconfig.json') || !fs.existsSync(`${REPO}/${dir}dist/main.js`)) return null;
+  const sources: Array<string> = [];
+  for (const file of files.filter((changed) => changed.startsWith(dir))) {
+    const path = file.slice(dir.length);
+    if (path.startsWith('e2e/') || TEST_FILE.test(path)) continue;
+    if (!modified.has(file) || !/^src\/.+\.ts$/.test(path) || path.endsWith('.d.ts')) return null;
+    sources.push(path);
+  }
+
+  return sources;
+}
+
+// `pnpm run build:metadata` without pnpm, and without type-checking the script itself (the generator makes its own
+// TypeScript program): the same metadata, 2 to 4 s sooner.
+function generateApiMetadata(): Promise<void> {
+  return run('node', ['node_modules/ts-node/dist/bin.js', 'scripts/generate-metadata.ts'], {
+    cwd: `${REPO}/apps/api`,
+    env: { ...vars, NODE_OPTIONS: '', TS_NODE_TRANSPILE_ONLY: 'true' },
+  });
 }
 
 function withoutTypeCheck(app: string): string {
@@ -111,7 +340,17 @@ export async function dashboardBundleChanged(files: ReadonlyArray<string>): Prom
   return files.some((file) => [...dirs].some((dir) => `${REPO}/${file}`.startsWith(`${dir}/`)));
 }
 
-export async function deployApp(name: string, { dependenciesChanged = true } = {}): Promise<void> {
+export interface DeployOptions {
+  // Its locked dependencies changed: a full `pnpm deploy`.
+  readonly dependenciesChanged?: boolean;
+  // A workspace package it runs on may have changed: their copies in the deploy are refreshed.
+  readonly workspaceChanged?: boolean;
+}
+
+export async function deployApp(
+  name: string,
+  { dependenciesChanged = true, workspaceChanged = true }: DeployOptions = {}
+): Promise<void> {
   const target = `${DEPLOY}/${name}`;
   const dist = `${target}/dist`;
   const src = `${REPO}/apps/${name}/src`;
@@ -119,7 +358,7 @@ export async function deployApp(name: string, { dependenciesChanged = true } = {
   if (!filter) throw new Error(`${name} isn't one of the deployed apps`);
   if (dependenciesChanged || !fs.existsSync(`${target}/node_modules/.pnpm`)) await pnpmDeploy(filter, target);
   else {
-    await refreshWorkspacePackages(target);
+    if (workspaceChanged) await refreshWorkspacePackages(target);
     // The app reads its version from it; with the same dependencies, a deploy writes the same file.
     fs.copyFileSync(`${REPO}/apps/${name}/package.json`, `${target}/package.json`);
   }

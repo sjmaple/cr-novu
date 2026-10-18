@@ -98,6 +98,7 @@ export const AppLogLine = z.object({
 
 
 export const PackageJson = z.object({
+  scripts: z.record(z.string(), z.string()).optional(),
   dependencies: z.record(z.string(), z.string()).optional(),
   devDependencies: z.record(z.string(), z.string()).optional(),
   optionalDependencies: z.record(z.string(), z.string()).optional(),
