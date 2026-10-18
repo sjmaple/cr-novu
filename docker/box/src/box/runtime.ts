@@ -30,6 +30,12 @@ export const capture = (cmd: string, args: ReadonlyArray<string>, options?: proc
 export const output = (cmd: string, args: ReadonlyArray<string>, options?: proc.RunOptions) =>
   proc.output(cmd, args, inBox(options));
 
+// Waits for all of them, so that none still runs when the first failure throws.
+export async function allSettled(work: ReadonlyArray<Promise<unknown>>): Promise<void> {
+  const failed = (await Promise.allSettled(work)).find((result) => result.status === 'rejected');
+  if (failed) throw failed.reason;
+}
+
 export async function step<T>(name: string, work: () => Promise<T>): Promise<T> {
   const started = Date.now();
   log(`${name}...`);

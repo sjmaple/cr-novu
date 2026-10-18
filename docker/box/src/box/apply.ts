@@ -17,10 +17,11 @@ import {
 } from './build.ts';
 import { fetchRef, gitWithToken, mergeOntoBaked, unbundle } from './git.ts';
 import { withLock } from './lock.ts';
+import { relockedProcesses } from './lockfile.ts';
 import { migrate } from './migrate.ts';
 import { API_HEALTH, APPLIED, APPLYING, BAKED, NX, REPO_URL } from './paths.ts';
-import { CODE_PROCESSES, DEPLOYED_APPS, PATH_PROCESSES, PROJECT_PROCESSES } from './processes.ts';
-import { output, readJson, run, step, vars, waitForHttp } from './runtime.ts';
+import { CODE_PROCESSES, DEPLOYED_APPS, PATH_PROCESSES, PROCESSES, PROJECT_PROCESSES } from './processes.ts';
+import { allSettled, output, readJson, run, step, vars, waitForHttp } from './runtime.ts';
 import { pc, startSkipped, stopRunning, storesReady } from './supervisor.ts';
 
 export function runnable(processes: Iterable<string>): Array<string> {
@@ -32,6 +33,8 @@ interface ApplyPlan {
   readonly build: ReadonlyArray<string>;
   readonly enterprise: boolean;
   readonly restart: ReadonlyArray<string>;
+  // The deployed apps whose locked dependencies changed.
+  readonly reinstall: ReadonlyArray<string>;
 }
 
 export interface ApplyOptions {
@@ -82,9 +85,12 @@ async function applyLocked({ ref = '', bundle, full: fullAsked, baseline, token 
     if (files.includes('.source'))
       await gitWithToken(token, ['submodule', 'update', '--init', '--depth', '1', '.source']);
   });
-  const plan = await step('plan', () => (full ? Promise.resolve(fullPlan()) : planFor(files)));
+  const plan = await step('plan', () => (full ? Promise.resolve(fullPlan()) : planFor(files, base, target.sha)));
   const listed = (names: ReadonlyArray<string>) => names.join(' ') || 'nothing';
-  log(`plan: install ${plan.install ? 'yes' : 'no'}, build ${listed(plan.build)}, restart ${listed(plan.restart)}`);
+  log(
+    `plan: install ${plan.install ? 'yes' : 'no'}, build ${listed(plan.build)}, restart ${listed(plan.restart)}` +
+      (plan.reinstall.length ? `, pnpm deploy ${plan.reinstall.join(' ')}` : '')
+  );
   await applyPlan(plan);
 
   if (baseline) {
@@ -105,10 +111,14 @@ async function applyLocked({ ref = '', bundle, full: fullAsked, baseline, token 
 // package.json.
 const INSTALL_FILES = ['pnpm-lock.yaml', 'pnpm-workspace.yaml', '.source'];
 
-async function planFor(files: ReadonlyArray<string>): Promise<ApplyPlan> {
+async function planFor(files: ReadonlyArray<string>, from: string, to: string): Promise<ApplyPlan> {
+  const source = files.includes('.source');
   const install = files.some((file) => INSTALL_FILES.includes(file));
-  const build = await affectedApps(files, install);
-  const restart = new Set(install ? CODE_PROCESSES : build.flatMap((project) => PROJECT_PROCESSES[project] ?? []));
+  // nx can't see inside the submodule, so a `.source` bump affects nothing: it reaches every code process.
+  const relocked = install && !source ? await relockedProcesses(from, to) : [];
+  const affected = await affectedProjects(files.filter((file) => file !== 'pnpm-lock.yaml'));
+  const build = await appsToBuild(files, affected, install, relocked);
+  const restart = new Set([...build.flatMap((project) => PROJECT_PROCESSES[project] ?? []), ...relocked]);
   for (const [prefix, name] of Object.entries(PATH_PROCESSES))
     if (files.some((file) => file.startsWith(prefix))) restart.add(name);
 
@@ -116,30 +126,46 @@ async function planFor(files: ReadonlyArray<string>): Promise<ApplyPlan> {
     install,
     build,
     enterprise: install || files.some((file) => file.startsWith('enterprise/packages/')),
-    restart: runnable(restart),
+    restart: runnable(source ? CODE_PROCESSES : restart),
+    reinstall: Object.keys(DEPLOYED_APPS).filter((name) => source || relocked.includes(name)),
   };
 }
 
 function fullPlan(): ApplyPlan {
-  return { install: true, build: Object.keys(PROJECT_PROCESSES), enterprise: true, restart: runnable(CODE_PROCESSES) };
+  return {
+    install: true,
+    build: Object.keys(PROJECT_PROCESSES),
+    enterprise: true,
+    restart: runnable(CODE_PROCESSES),
+    reinstall: Object.keys(DEPLOYED_APPS),
+  };
 }
 
-async function affectedApps(files: ReadonlyArray<string>, install: boolean): Promise<Array<string>> {
+async function affectedProjects(files: ReadonlyArray<string>): Promise<Array<string>> {
   if (!files.length) return [];
   // Not --base/--head: nx diffs from their merge base, which for two box merge commits is an older bake.
-  const affected = fromJson(NxProjects).parse(
+  return fromJson(NxProjects).parse(
     await output(NX, ['show', 'projects', '--affected', `--files=${files.join(',')}`, '--json'])
   );
+}
+
+async function appsToBuild(
+  files: ReadonlyArray<string>,
+  affected: ReadonlyArray<string>,
+  install: boolean,
+  relocked: ReadonlyArray<string>
+): Promise<Array<string>> {
   let apps = affected.filter((project) => PROJECT_PROCESSES[project]);
   if (!install && !(await dashboardBundleChanged(files)))
     apps = apps.filter((project) => project !== '@novu/dashboard');
-  // nx can't see inside the submodule, so a `.source` bump affects nothing; the enterprise code runs in the API and worker.
-  if (files.includes('.source')) apps = [...new Set([...apps, '@novu/api-service', '@novu/worker'])];
+  // The enterprise code runs in the API and worker.
+  if (files.includes('.source')) apps.push('@novu/api-service', '@novu/worker');
+  for (const name of relocked) apps.push(...(PROCESSES[name]?.projects ?? []));
 
-  return apps;
+  return [...new Set(apps)];
 }
 
-async function applyPlan({ install, build: projects, enterprise, restart }: ApplyPlan): Promise<void> {
+async function applyPlan({ install, build: projects, enterprise, restart, reinstall }: ApplyPlan): Promise<void> {
   const stoppedDuringBuild = restart.filter((name) => name !== 'dashboard');
   await stopRunning(stoppedDuringBuild);
   if (install) await step('pnpm install', pnpmInstall);
@@ -147,9 +173,9 @@ async function applyPlan({ install, build: projects, enterprise, restart }: Appl
   if (restart.includes('bridge')) await step('build bridge', buildBridge);
   const redeploy = Object.keys(DEPLOYED_APPS).filter((name) => restart.includes(name));
   if (redeploy.length)
-    await step(`deploy ${redeploy.join(' ')}`, async () => {
-      for (const name of redeploy) await deployApp(name, { dependenciesChanged: install });
-    });
+    await step(`deploy ${redeploy.join(' ')}`, () =>
+      allSettled(redeploy.map((name) => deployApp(name, { dependenciesChanged: reinstall.includes(name) })))
+    );
   await step('migrate', migrate);
   if (restart.includes('dashboard')) prepareDashboard();
   if (stoppedDuringBuild.length)

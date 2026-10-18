@@ -29,7 +29,7 @@ import {
   WORKER_HEALTH,
 } from './paths.ts';
 import { DEPLOYED_APPS, PROJECT_PROCESSES } from './processes.ts';
-import { appendTiming, output, readJson, run, step, vars, waitForHttp } from './runtime.ts';
+import { allSettled, appendTiming, output, readJson, run, step, vars, waitForHttp } from './runtime.ts';
 import { seedChannels, seedTeamTier } from './seed.ts';
 import { seedClerk } from './seed-org.ts';
 import { SOCKET } from './supervisor.ts';
@@ -59,9 +59,7 @@ async function bakeLocked(ref: string, token: string | undefined): Promise<void>
   else log('WARN: no BULL_MQ_PRO_NPM_TOKEN; the box runs open-source BullMQ without NOVU_MANAGED_SERVICE');
   await step('build', () => build(Object.keys(PROJECT_PROCESSES)));
   await step('build bridge', buildBridge);
-  await step('deploy api worker', async () => {
-    for (const name of Object.keys(DEPLOYED_APPS)) await deployApp(name);
-  });
+  await step('deploy api worker', () => allSettled(Object.keys(DEPLOYED_APPS).map((name) => deployApp(name))));
   await prepareRuntime();
 
   const supervisor = startSupervisor();

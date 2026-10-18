@@ -1,7 +1,9 @@
-
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { relative } from 'node:path';
+import { log } from '../node/main.ts';
 import { Applied, Baked, fromJson, NestConfig, NxGraph, PackageJson, PnpmPackages } from '../shared/contracts.ts';
+import { messageOf } from '../shared/errors.ts';
 import { APPLIED, BAKED, BULLMQ_PRO, DATA, DEPLOY, NX, REPO, RUN } from './paths.ts';
 import { DEPLOYED_APPS } from './processes.ts';
 import { output, readJson, run, vars } from './runtime.ts';
@@ -115,19 +117,11 @@ export async function deployApp(name: string, { dependenciesChanged = true } = {
   const src = `${REPO}/apps/${name}/src`;
   const filter = DEPLOYED_APPS[name];
   if (!filter) throw new Error(`${name} isn't one of the deployed apps`);
-  if (!dependenciesChanged && fs.existsSync(`${target}/node_modules/.pnpm`)) {
+  if (dependenciesChanged || !fs.existsSync(`${target}/node_modules/.pnpm`)) await pnpmDeploy(filter, target);
+  else {
     await refreshWorkspacePackages(target);
     // The app reads its version from it; with the same dependencies, a deploy writes the same file.
     fs.copyFileSync(`${REPO}/apps/${name}/package.json`, `${target}/package.json`);
-  } else {
-    fs.rmSync(target, { recursive: true, force: true });
-    await run(
-      'pnpm',
-      ['--filter', filter, 'deploy', '--legacy', '--prod', '--store-dir', `${DATA}/pnpm-store`, target],
-      {
-        env: { ...vars, NODE_OPTIONS: '--max-old-space-size=4096', CI: 'true', HUSKY: '0' },
-      }
-    );
   }
   fs.rmSync(dist, { recursive: true, force: true });
   fs.cpSync(`${REPO}/apps/${name}/dist`, dist, { recursive: true });
@@ -158,6 +152,31 @@ export async function deployApp(name: string, { dependenciesChanged = true } = {
       filter: (source) => !source.startsWith(`${BULLMQ_PRO}/node_modules/@taskforcesh`),
     });
   }
+}
+
+// `--offline` resolves from the store `pnpm install` just filled: about 20 s sooner, and two deploys can run at
+// once. It fails on a package the store has no metadata for; then the deploy goes online.
+async function pnpmDeploy(filter: string, target: string): Promise<void> {
+  const deploy = (offline: boolean) => {
+    putAside(target);
+    const args = ['--filter', filter, 'deploy', '--legacy', '--prod', ...(offline ? ['--offline'] : [])];
+
+    return run('pnpm', [...args, '--store-dir', `${DATA}/pnpm-store`, target], {
+      env: { ...vars, NODE_OPTIONS: '--max-old-space-size=4096', CI: 'true', HUSKY: '0' },
+    });
+  };
+  await deploy(true).catch((error) => {
+    log(`WARN: the offline deploy of ${filter} failed (${messageOf(error)}); deploying online`);
+
+    return deploy(false);
+  });
+}
+
+// Deleting a deploy (1.9 GB, 170,000 files) takes 7 to 17 s; renamed, it's deleted in the background, with any a
+// stopped box left.
+function putAside(dir: string): void {
+  if (fs.existsSync(dir)) fs.renameSync(dir, `${DEPLOY}/.trash-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  spawn('sh', ['-c', `rm -rf ${DEPLOY}/.trash-*`], { detached: true, stdio: 'ignore' }).unref();
 }
 
 async function refreshWorkspacePackages(target: string): Promise<void> {
