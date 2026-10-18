@@ -50,6 +50,8 @@ export interface UpOptions {
   readonly from?: string | undefined;
   readonly fromBase?: boolean;
   readonly ref?: string;
+  // Done once the box answers (an apply follows), not once it's healthy.
+  readonly reachable?: boolean;
 }
 
 export interface BoxCall {
@@ -135,6 +137,8 @@ export function cloudTarget(options: CloudOptions): CloudTarget {
     return id;
   };
 
+  const answers = (report: DoctorReport) => Boolean(report.baked) && report.lock?.command !== 'bake';
+
   const doctor = async () => {
     const text = await collected({ cmd: ['sh', '-c', `${BOX_CLI.join(' ')} doctor || true`] }).catch(() => '');
 
@@ -199,11 +203,11 @@ export function cloudTarget(options: CloudOptions): CloudTarget {
       log(`${worker} is ${current.phase}; waking it`);
       await call('/up', { method: 'POST' });
     }
-    const baked = (report: DoctorReport) => Boolean(report.baked) && report.lock?.command !== 'bake';
-    await waitFor(READY_WITHIN_SECONDS[readyWait(current)], reachable ? baked : (report) => report.ok);
+    await waitFor(READY_WITHIN_SECONDS[readyWait(current)], reachable ? answers : (report) => report.ok);
   };
 
-  const up = async ({ ref = 'next', from, fromBase = false }: UpOptions) => {
+  const up = async (options: UpOptions): Promise<number> => {
+    const { ref = 'next', from, fromBase = false, reachable = false } = options;
     const query = new URLSearchParams({ ref });
     const snapshot = await startingSnapshot(from, fromBase, ref);
     if (snapshot) query.set('from', snapshot);
@@ -214,8 +218,16 @@ export function cloudTarget(options: CloudOptions): CloudTarget {
     const { state: started } = decode(StateAnswer, await answer.text(), `${worker} /up`);
     log(`${worker}: ${started}${started === 'baking' ? ` ${ref} (11 to 14 minutes)` : ''}`);
     const waits: Record<string, number> = READY_WITHIN_SECONDS;
-    await waitFor(waits[started] ?? READY_WITHIN_SECONDS.running, (report) => report.ok);
-    log(`${worker} is ready`);
+    try {
+      await waitFor(waits[started] ?? READY_WITHIN_SECONDS.running, reachable ? answers : (report) => report.ok);
+    } catch (error) {
+      // Its own snapshot is gone: now `lost`, it starts from base's.
+      if (!fromBase || started !== 'waking' || snapshot || (await state())?.phase !== 'lost') throw error;
+      log(`${worker} couldn't restore its snapshot; starting it from ${boxWorker('base')} instead`);
+
+      return up(options);
+    }
+    log(`${worker} is ${reachable ? 'up' : 'ready'}`);
     console.log(`box: ${origin}`);
     console.log(`mailpit: ${origin}/mail`);
 
