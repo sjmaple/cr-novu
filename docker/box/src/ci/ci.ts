@@ -18,6 +18,7 @@ import {
   OidcToken,
   Pull,
   PullRequestEvent,
+  SweepAnswer,
 } from '../shared/contracts.ts';
 import { messageOf } from '../shared/errors.ts';
 import { BOX_CLI, boxWorker, DOMAIN, detached, OIDC_AUDIENCE } from '../shared/names.ts';
@@ -174,11 +175,13 @@ async function startOrReach(cloud: CloudTarget, box: string, number: number): Pr
   return true;
 }
 
-async function apply(cloud: CloudTarget, sha: string): Promise<string> {
+async function apply(cloud: CloudTarget, sha: string, { baseline = false } = {}): Promise<string> {
   const file = `/data/logs/apply-${sha.slice(0, 12)}.log`;
   const boxState = (text: string) => decode(BoxState, text, '`box state`');
   log(`applying ${sha}; the box logs it to ${file}`);
-  await cloud.runOutput(detached([...BOX_CLI, 'apply', sha], file), { github: true });
+  await cloud.runOutput(detached([...BOX_CLI, 'apply', sha, ...(baseline ? ['--baseline'] : [])], file), {
+    github: true,
+  });
   const deadline = Math.min(Date.now() + APPLY_MINUTES * 60_000, DEADLINE);
   let lastSeen = Date.now();
   const applying = async () => {
@@ -211,8 +214,8 @@ async function apply(cloud: CloudTarget, sha: string): Promise<string> {
   });
   const output = await cloud.runOutput(['cat', file]);
   console.log(output);
-  const { applied, applying: unfinished } = boxState(await cloud.boxOutput(['state']));
-  if (applied?.head !== sha || unfinished)
+  const { baked, applied, applying: unfinished } = boxState(await cloud.boxOutput(['state']));
+  if ((baseline ? baked?.sha : applied?.head) !== sha || unfinished)
     throw new ApplyFailed(
       output.match(/ERROR: .*$/gm)?.at(-1) ?? `the apply ended without applying ${sha.slice(0, 10)}`,
       file
@@ -250,14 +253,51 @@ async function cleanup(): Promise<number> {
   return failed ? 1 : 0;
 }
 
-// Deletes base and bakes it from next, then saves it, which also gives it a snapshot younger than Cloudflare's
-// 30 days. Until it's back (about 20 minutes), a new PR box bakes next itself.
+// Deletes base and bakes it from next, then saves it: a new snapshot chain, younger than Cloudflare's 30 days, so the
+// refreshes' deltas don't pile up forever and the sweep can delete the old chain once no box needs it. Until it's back
+// (about 20 minutes), a new PR box bakes next itself.
 async function rebake(): Promise<number> {
   const base = target('base');
   await base.delete();
   await base.up({ ref: 'next' });
 
-  return base.down();
+  return saved(await base.down());
+}
+
+// Puts next's head on base and saves it, so a new PR box starts from it and builds only its own changes. When base
+// can't be refreshed (no snapshot, a snapshot that doesn't restore on this image, a failed apply), it's baked again
+// instead: a half-applied base would be saved by its idle sleep, and every new PR box would start from that.
+async function refresh(): Promise<number> {
+  const base = target('base');
+  const { sha } = await github(`/repos/${REPO}/commits/next`, z.object({ sha: z.string() }));
+  try {
+    await base.readyFor({ reachable: true });
+    const { baked } = decode(BoxState, await base.boxOutput(['state']), '`box state`');
+    if (baked?.sha === sha) log(`${base.name} is on next's head ${sha.slice(0, 10)} already`);
+    else log(await apply(base, sha, { baseline: true }));
+  } catch (error) {
+    log(`WARN: refreshing ${base.name} failed, so it is baked again: ${messageOf(error)}`);
+
+    return rebake();
+  }
+
+  return saved(await base.down());
+}
+
+async function saved(code: number): Promise<number> {
+  try {
+    const report = await hostBoxes('sweep', SweepAnswer, { method: 'POST', token: boxToken });
+    const { deleting, deleted, unreachable, gigabytes, blocked } = report;
+    log(
+      blocked
+        ? `snapshot sweep: deletes nothing: ${blocked}`
+        : `snapshot sweep: ${deleting ? `deleted ${deleted.length}` : `would delete ${unreachable.length}`} (${gigabytes.unreachable} GB); kept ${gigabytes.kept} GB`
+    );
+  } catch (error) {
+    log(`WARN: the snapshot sweep failed: ${messageOf(error)}`);
+  }
+
+  return code;
 }
 
 await main('ci', () =>
@@ -268,6 +308,7 @@ await main('ci', () =>
       run: pr,
     },
     cleanup: { usage: '', help: 'delete pr-* boxes whose PR is closed or no longer labeled `box`', run: cleanup },
-    rebake: { usage: '', help: 'bake base again from next and save it to its snapshot', run: rebake },
+    rebake: { usage: '', help: 'bake base again from next and save it to its snapshot (a new chain)', run: rebake },
+    refresh: { usage: '', help: "put next's head on base (merges onto it from then on) and save it", run: refresh },
   })
 );

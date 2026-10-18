@@ -149,6 +149,13 @@ export const StateAnswer = z.object({ state: z.string(), ref: z.string().optiona
 export type StateAnswer = z.infer<typeof StateAnswer>;
 
 export const BoxList = z.object({ boxes: z.array(z.string()) });
+export const SweepAnswer = z.object({
+  deleting: z.boolean(),
+  deleted: z.array(z.string()),
+  unreachable: z.array(z.unknown()),
+  gigabytes: z.object({ kept: z.number(), unreachable: z.number() }),
+  blocked: z.string().nullable(),
+});
 
 
 export const CloudflareAnswer = z.object({

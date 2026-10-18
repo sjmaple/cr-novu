@@ -80,7 +80,7 @@ export async function failUnlessOk(response: Response, what: string, allowed?: n
 export async function hostBoxes<T>(
   path: string,
   schema: z.ZodType<T>,
-  { method = 'GET', token }: { readonly method?: 'GET' | 'PUT' | 'DELETE'; readonly token: Token }
+  { method = 'GET', token }: { readonly method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; readonly token: Token }
 ): Promise<T> {
   const what = `${method} ${HOST}/__box/${path}`;
   const response = await boxFetch(`https://${HOST}.${DOMAIN}/__box/${path}`, { method }, token);
