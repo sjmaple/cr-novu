@@ -116,9 +116,25 @@ and the PR workflow run) puts a PR, a branch, a full SHA or your checkout on a r
 baked commit (like CI's merge ref) and stops if the two conflict. It then
 reinstalls if the lockfile changed, builds the projects `nx affected` reports, redeploys the API and worker,
 runs migrations and restarts what changed. A PR that changes `@novu/framework`, `@novu/agent-toolkit` or
-`playground/nextjs` also rebuilds the bridge app (about 45 s), restarts it and syncs it again, so the PR's
+`playground/nextjs` also rebuilds the bridge app (about 55 s), restarts it and syncs it again, so the PR's
 workflows and agents run on the PR's framework. It logs the plan before it runs it, for example
-`plan: install no, build @novu/worker, restart worker` (about 20 s for that one).
+`plan: install no, build @novu/worker, restart worker` (about 15 s for that one).
+
+It builds only what the change needs (`src/box/build.ts`):
+
+- **API or worker sources:** it compiles only the changed files, with Nest's own SWC compiler and the app's
+  config (the same output as `nest build`), and the API regenerates its metadata. A new, deleted or renamed file,
+  or a change to the app's config or the root `tsconfig.json`, builds the app in full.
+- **A library:** it builds that library, then each library depending on it whose output can change: for one tsc
+  builds, only when the declarations (`.d.ts`) it compiles against changed; for one a bundler builds, always. The
+  apps don't recompile for a library change (SWC reads no other files), and the API regenerates its metadata only
+  when declarations changed. `@novu/framework` builds without its declarations (90 of its 92 s) unless a library
+  changed in the same apply compiles against them; the old ones stay. A change outside every project (a root
+  config) builds every library the apps use, as a bake does (nx's cache replays the unchanged ones).
+- **The lockfile:** it reinstalls, then redeploys (`pnpm deploy`) and restarts only the apps whose locked
+  dependencies changed, by comparing what each installs at the two commits (`src/box/lockfile.ts`; nx can't tell
+  from a changed lockfile). The API and worker deploy at once, offline first. A changed `package.json` alone
+  doesn't reinstall: a dependency change always changes the lockfile.
 
 Add `--full` to install, build and restart everything, as a bake does (about 5 minutes), when the box behaves in a
 way the PR doesn't explain. `apply` also logs the PR's `PR Checks Passed` result from GitHub, and a `WARN` if
@@ -201,6 +217,7 @@ state (`/__box/state`) doesn't count as a request. While a box saves, its addres
 | `down` (stop every process, snapshot, stop) | 18 s to 6 min (the box saves on its own; `down` waits, and fails unless a new snapshot is stored) |
 | Wake, from the first request to a healthy API | 33 to 42 s |
 | `sync`, an API change | 57 to 83 s |
+| `apply` in the box, to healthy apps | an API change 40 s, a worker change 16 s, a library change 51 to 69 s (more when the declarations of `@novu/shared` change: 119 s), `@novu/framework` 114 s, a lockfile change that changes no app's dependencies 20 s |
 | Smoke over the public address (a box started from `base`) | 43/43 in 70 to 75 s |
 | `up --from base` for a new box (deploy its Worker, then wake from base's snapshot, no bake) | 80 to 106 s, of which about 40 s is the wake |
 | The same, seen three times | 4 to 6 min (inside the start); cause unknown |
@@ -267,10 +284,11 @@ boxes on demand only:
   says so. Nightly, the workflow deletes `pr-*` boxes whose PR is closed or no longer labeled.
 - Every push to `next` refreshes `base` (`refresh`): it wakes `base`, applies `next`'s head with
   `box apply <sha> --baseline`, which also makes that commit the baked one, so a PR box started from `base` merges
-  onto the new `next` and builds only the PR's changes, then saves it (about 3.5 minutes when the API, worker and
-  dashboard rebuild). One refresh runs at a time; pushes during it leave one waiting run, for the newest `next`, and a
-  running refresh is never cancelled (that would lose the save). When `base` can't be refreshed (no snapshot, a
-  snapshot from an older image, a failed apply), it's baked again instead.
+  onto the new `next` and builds only the PR's changes, then saves it (3.7 minutes for 56 changed files that
+  rebuild the API, worker and dashboard, of which the apply is 2.5). One refresh runs at a time; pushes during it
+  leave one waiting run, for the newest `next`, and a running refresh is never cancelled (that would lose the
+  save). When `base` can't be refreshed (no snapshot, a snapshot from an older image, a failed apply), it's baked
+  again instead.
 - Nightly, the workflow also rebakes `base` from `next` (`rebake`), starting a new snapshot chain, so refreshes
   don't grow one chain forever, and keeping its snapshot from expiring. A push that arrives while the rebake waits
   to start replaces it with a refresh. `cleanup`, `rebake` and `refresh` also run by hand with "Run workflow".
