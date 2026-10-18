@@ -152,6 +152,14 @@ export type StateAnswer = z.infer<typeof StateAnswer>;
 export const BoxList = z.object({ boxes: z.array(z.string()) });
 export const SweepAnswer = z.object({
   deleting: z.boolean(),
+  roots: z.array(
+    z.object({
+      box: z.string(),
+      snapshot: z.string().nullable(),
+      chain: z.object({ snapshots: z.number(), deltaGigabytes: z.number(), began: z.string().nullable() }).nullable(),
+    })
+  ),
+  missing: z.array(z.string()),
   deleted: z.array(z.string()),
   unreachable: z.array(z.unknown()),
   gigabytes: z.object({ kept: z.number(), unreachable: z.number() }),

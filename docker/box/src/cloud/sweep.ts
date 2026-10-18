@@ -1,4 +1,3 @@
-
 import * as z from 'zod';
 import { fromJson } from '../shared/contracts.ts';
 import { messageOf } from '../shared/errors.ts';
@@ -8,11 +7,16 @@ import type { HostEnv } from './env.ts';
 
 // Each sleep stores a snapshot in the account's registry, as a btrfs delta on the snapshot the box woke from, and
 // nothing deletes them. A delta can't be restored without its ancestors, so the sweep keeps every snapshot in the
-// chain of a box's current snapshot (`restore_chain`), and of any snapshot under an hour old (a save whose id the box
-// hasn't stored yet), and deletes the rest: those of this host's container application and of applications that no
-// longer exist. It deletes only when the host's SWEEP var is `delete`; otherwise it only reports.
+// chain of a box's current snapshot (`restore_chain`, and each `parent_snapshot_id`), of a snapshot base replaced in
+// the last hour, and of any snapshot under an hour old (a save whose id the box hasn't stored yet), and deletes the
+// rest of this host's container application's snapshots; other applications' are never touched. It deletes only when
+// the host's SWEEP var is `delete`; otherwise it only reports.
 const REGISTRY = 'https://registry.cloudflare.com';
 const GRACE_MS = 60 * 60 * 1000;
+// Cloudflare deletes a snapshot 30 days after it was made or last restored; a box asleep longer woke from it last.
+const EXPIRED_MS = 30 * 24 * 60 * 60 * 1000;
+// Container snapshots began in 2026; an earlier time is no time.
+const SNAPSHOTS_BEGAN = Date.UTC(2026, 0, 1);
 const SNAPSHOT_TAG = 'rootfs-snapshot-';
 const SNAPSHOT_ARTIFACT = 'application/vnd.cloudchamber.rootfs-snapshot.v1';
 const MANIFEST = 'application/vnd.oci.image.manifest.v1+json';
@@ -28,8 +32,9 @@ const SnapshotConfig = z.object({
   snapshot_id: z.string(),
   snapshot_set_id: z.string(),
   application_id: z.string(),
+  parent_snapshot_id: z.string().nullish(),
   blob_size_bytes: z.number(),
-  created_at_unix_seconds: z.number(),
+  created_at_unix_seconds: z.number().nullish(),
   restore_chain: z.object({ entries: z.array(z.object({ snapshot_id: z.string() })) }),
 });
 
@@ -40,15 +45,26 @@ interface Snapshot {
   readonly setTag: string | null;
   readonly digest: string;
   readonly app: string;
+  readonly parent: string | null;
   readonly chain: ReadonlyArray<string>;
   readonly bytes: number;
   readonly created: number;
 }
 
-export interface Root {
+interface Root {
   readonly box: string;
   readonly phase: string;
+  readonly since: number;
   readonly snapshot: string | null;
+  readonly replaced: string | null;
+}
+
+export interface Chain {
+  readonly snapshots: number;
+  // The deltas after the first, full snapshot.
+  readonly deltaGigabytes: number;
+  // When the first snapshot was saved: when the box, or the box it started from, was baked.
+  readonly began: string | null;
 }
 
 interface Listed {
@@ -60,10 +76,11 @@ interface Listed {
 
 export interface SweepReport {
   readonly deleting: boolean;
-  readonly roots: ReadonlyArray<Root>;
+  readonly roots: ReadonlyArray<Omit<Root, 'since'> & { readonly chain: Chain | null }>;
   readonly missing: ReadonlyArray<string>;
+  readonly expired: ReadonlyArray<string>;
   readonly kept: ReadonlyArray<Listed & { readonly for: string }>;
-  readonly unreachable: ReadonlyArray<Listed & { readonly app: string }>;
+  readonly unreachable: ReadonlyArray<Listed>;
   readonly deleted: ReadonlyArray<string>;
   readonly gigabytes: { readonly kept: number; readonly unreachable: number };
   readonly blocked: string | null;
@@ -73,31 +90,41 @@ export async function sweep(env: HostEnv, { dryRun }: { readonly dryRun: boolean
   const deleting = env.SWEEP === 'delete' && !dryRun;
   const namespace = await boxNamespace(env);
   const roots = await rootsOf(env, namespace);
-  const ownApp = await applications(env, namespace);
+  const ownApp = await ownApplication(env, namespace);
   const registry = await registryOf(env, deleting);
   const snapshots = await inventory(registry);
   const byId = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
+  const now = Date.now();
 
   const keep = new Map<string, string>();
-  const mark = (snapshot: Snapshot, why: string) => {
-    for (const id of [...snapshot.chain, snapshot.id]) if (!keep.has(id)) keep.set(id, why);
+  const mark = (id: string, why: string) => {
+    for (const queue = [id]; queue.length; ) {
+      const current = queue.pop() ?? '';
+      if (keep.has(current)) continue;
+      keep.set(current, why);
+      const found = byId.get(current);
+      if (found) queue.push(...found.chain, ...(found.parent ? [found.parent] : []));
+    }
   };
   const missing: Array<string> = [];
-  for (const { box, snapshot } of roots) {
+  const expired: Array<string> = [];
+  for (const { box, phase, since, snapshot, replaced } of roots) {
+    if (replaced) mark(replaced, `${box} (replaced)`);
     if (!snapshot) continue;
-    const found = byId.get(snapshot);
-    if (found) mark(found, box);
+    if (byId.has(snapshot)) mark(snapshot, box);
+    else if (phase === 'asleep' && now - since > EXPIRED_MS) expired.push(`${box}: ${snapshot}`);
     else missing.push(`${box}: ${snapshot}`);
   }
   for (const snapshot of snapshots) {
-    if (Date.now() - snapshot.created < GRACE_MS) mark(snapshot, 'under an hour old');
-    else if (snapshot.app !== ownApp.id && ownApp.existing.has(snapshot.app)) mark(snapshot, 'another application');
+    if (dashed(snapshot.app) !== ownApp) mark(snapshot.id, 'another application');
+    else if (!(snapshot.created > SNAPSHOTS_BEGAN) || now - snapshot.created < GRACE_MS)
+      mark(snapshot.id, 'under an hour old');
   }
   const unreachable = snapshots.filter((snapshot) => !keep.has(snapshot.id));
   const blocked = missing.length
     ? `the registry lacks the current snapshot of ${missing.join(', ')}`
-    : !roots.some((root) => root.snapshot)
-      ? 'no box has a snapshot'
+    : !roots.some((root) => root.box === 'base' && root.snapshot)
+      ? 'base has no snapshot'
       : null;
 
   const deleted: Array<string> = [];
@@ -125,10 +152,11 @@ export async function sweep(env: HostEnv, { dryRun }: { readonly dryRun: boolean
 
   return {
     deleting,
-    roots,
+    roots: roots.map(({ since: _, ...root }) => ({ ...root, chain: chainOf(byId, root.snapshot) })),
     missing,
+    expired,
     kept: kept.map((snapshot) => ({ ...listed(snapshot), for: keep.get(snapshot.id) ?? '' })),
-    unreachable: unreachable.map((snapshot) => ({ ...listed(snapshot), app: snapshot.app })),
+    unreachable: unreachable.map(listed),
     deleted,
     gigabytes: { kept: sum(kept), unreachable: sum(unreachable) },
     blocked,
@@ -136,6 +164,18 @@ export async function sweep(env: HostEnv, { dryRun }: { readonly dryRun: boolean
 }
 
 const gigabytes = (bytes: number) => +(bytes / 1e9).toFixed(2);
+
+function chainOf(byId: ReadonlyMap<string, Snapshot>, id: string | null): Chain | null {
+  const snapshot = id ? byId.get(id) : undefined;
+  if (!snapshot) return null;
+  const [first, ...deltas] = [...new Set([...snapshot.chain, snapshot.id])].map((entry) => byId.get(entry));
+
+  return {
+    snapshots: deltas.length + 1,
+    deltaGigabytes: gigabytes(deltas.reduce((total, entry) => total + (entry?.bytes ?? 0), 0)),
+    began: first && first.created > SNAPSHOTS_BEGAN ? new Date(first.created).toISOString() : null,
+  };
+}
 
 async function boxNamespace(env: HostEnv): Promise<string> {
   const answer = await cloudflare(env, 'GET', '/workers/durable_objects/namespaces?per_page=1000');
@@ -147,40 +187,39 @@ async function boxNamespace(env: HostEnv): Promise<string> {
 
 // Every Box object that stores anything, and every box the host lists; a box that can't answer stops the sweep.
 async function rootsOf(env: HostEnv, namespace: string): Promise<Array<Root>> {
-  const ids = new Map<string, DurableObjectId>();
+  const ids = new Map<string, { id: DurableObjectId; name?: string }>();
   for (let cursor: string | null | undefined = ''; cursor !== undefined && cursor !== null; ) {
     const query = new URLSearchParams({ limit: '1000', ...(cursor && { cursor }) });
     const answer = await cloudflare(env, 'GET', `/workers/durable_objects/namespaces/${namespace}/objects?${query}`);
     const objects = Objects.parse(answer?.result);
-    for (const { id, hasStoredData } of objects) if (hasStoredData !== false) ids.set(id, env.BOX.idFromString(id));
+    for (const { id, hasStoredData } of objects)
+      if (hasStoredData !== false) ids.set(id, { id: env.BOX.idFromString(id) });
     cursor = objects.length ? answer?.result_info?.cursor : null;
   }
-  for (const box of await list(env)) {
-    const id = env.BOX.idFromName(box);
-    ids.set(id.toString(), id);
+  for (const name of await list(env)) {
+    const id = env.BOX.idFromName(name);
+    ids.set(id.toString(), { id, name });
   }
 
   return Promise.all(
-    [...ids].map(async ([key, id]) => {
-      const state = await env.BOX.get(id)
-        .state()
-        .catch((error: unknown) => Promise.reject(new Error(`the state of Box ${key}: ${messageOf(error)}`)));
+    [...ids].map(async ([key, { id, name }]) => {
+      const stored = await env.BOX.get(id)
+        .stored()
+        .catch((error: unknown) => Promise.reject(new Error(`what Box ${name ?? key} stores: ${messageOf(error)}`)));
+      const { origin, ...root } = stored;
 
-      return {
-        box: state.origin ? boxOfOrigin(state.origin) : key,
-        phase: state.phase,
-        snapshot: state.snapshot?.id ?? null,
-      };
+      return { box: name ?? (origin ? boxOfOrigin(origin) : key), ...root };
     })
   );
 }
 
-async function applications(env: HostEnv, namespace: string) {
+// Only one application can be named by the namespace; a page that lacks it stops the sweep.
+async function ownApplication(env: HostEnv, namespace: string): Promise<string> {
   const apps = Applications.parse((await cloudflare(env, 'GET', '/containers/applications'))?.result);
   const own = apps.find((app) => app.durable_objects?.namespace_id === namespace);
   if (!own) throw new Error(`no container application for ${HOST}'s Box class`);
 
-  return { id: dashed(own.id), existing: new Set(apps.map((app) => dashed(app.id))) };
+  return dashed(own.id);
 }
 
 const dashed = (id: string) =>
@@ -267,9 +306,10 @@ async function snapshotAt(registry: Registry, repo: string, tag: string, tags: R
     setTag: tags.has(setTag) ? setTag : null,
     digest,
     app: config.application_id,
+    parent: config.parent_snapshot_id || null,
     chain: config.restore_chain.entries.map((entry) => entry.snapshot_id),
     bytes: config.blob_size_bytes,
-    created: config.created_at_unix_seconds * 1000,
+    created: (config.created_at_unix_seconds ?? 0) * 1000,
   };
 }
 
