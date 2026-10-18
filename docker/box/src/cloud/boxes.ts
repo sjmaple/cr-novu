@@ -43,7 +43,7 @@ async function route(request: Request, env: HostEnv, url: URL): Promise<Response
   return json({ box, state: 'deleted' });
 }
 
-async function list(env: HostEnv): Promise<Array<string>> {
+export async function list(env: HostEnv): Promise<Array<string>> {
   const answer = ScriptList.safeParse(await scripts(env, 'GET', ''));
   if (!answer.success) throw new Error(`Cloudflare's list of Workers: ${z.prettifyError(answer.error)}`);
 
@@ -79,13 +79,23 @@ async function upload(env: HostEnv, box: string): Promise<void> {
 }
 
 async function scripts(env: HostEnv, method: 'GET' | 'PUT' | 'POST' | 'DELETE', path: string, body?: BodyInit) {
-  const what = `Cloudflare ${method} workers/scripts${path.split('?')[0]}`;
+  return (await cloudflare(env, method, `/workers/scripts${path}`, body))?.result ?? null;
+}
+
+export async function cloudflare(
+  env: HostEnv,
+  method: 'GET' | 'PUT' | 'POST' | 'DELETE',
+  path: string,
+  body?: BodyInit
+): Promise<CloudflareAnswer | null> {
+  const what = `Cloudflare ${method} ${path.split('?')[0]}`;
   const headers: Record<string, string> = { Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}` };
   if (typeof body === 'string') headers['Content-Type'] = 'application/json';
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/workers/scripts${path}`,
-    { method, headers, ...(body && { body }) }
-  ).catch((error: unknown) => Promise.reject(new Error(`${what} -> ${String(error)}`)));
+  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}${path}`, {
+    method,
+    headers,
+    ...(body && { body }),
+  }).catch((error: unknown) => Promise.reject(new Error(`${what} -> ${String(error)}`)));
   if (method === 'DELETE' && response.status === 404) return null;
   const answer = fromJson(CloudflareAnswer).safeParse(await response.text());
   if (!answer.success || !answer.data.success)
@@ -93,5 +103,5 @@ async function scripts(env: HostEnv, method: 'GET' | 'PUT' | 'POST' | 'DELETE', 
       `${what} -> ${response.status}: ${JSON.stringify(answer.data?.errors ?? answer.data ?? null).slice(0, 300)}`
     );
 
-  return answer.data.result;
+  return answer.data;
 }
