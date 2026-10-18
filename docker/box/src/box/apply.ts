@@ -101,10 +101,12 @@ async function applyLocked({ ref = '', bundle, full: fullAsked, baseline, token 
   log(`applied ${target.ref} at ${target.sha}`);
 }
 
+// A dependency change always changes the lockfile (installs are frozen); the deploy refresh copies a changed
+// package.json.
+const INSTALL_FILES = ['pnpm-lock.yaml', 'pnpm-workspace.yaml', '.source'];
+
 async function planFor(files: ReadonlyArray<string>): Promise<ApplyPlan> {
-  const install = files.some(
-    (file) => file === 'pnpm-lock.yaml' || file.endsWith('package.json') || file === '.source'
-  );
+  const install = files.some((file) => INSTALL_FILES.includes(file));
   const build = await affectedApps(files, install);
   const restart = new Set(install ? CODE_PROCESSES : build.flatMap((project) => PROJECT_PROCESSES[project] ?? []));
   for (const [prefix, name] of Object.entries(PATH_PROCESSES))

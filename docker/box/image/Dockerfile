@@ -60,7 +60,7 @@ ENV COREPACK_HOME=/data/corepack \
     NX_NO_CLOUD=true \
     WRANGLER_SEND_METRICS=false \
     # `pnpm deploy --prod` marks the workspace prod-only, so pnpm would reinstall it without devDependencies
-    # before every script. The box runs `pnpm install` itself when the lockfile or a package.json changes.
+    # before every script. The box runs `pnpm install` itself when the lockfile changes.
     pnpm_config_verify_deps_before_run=false \
     BOX_HOME=/opt/box
 

@@ -115,8 +115,11 @@ export async function deployApp(name: string, { dependenciesChanged = true } = {
   const src = `${REPO}/apps/${name}/src`;
   const filter = DEPLOYED_APPS[name];
   if (!filter) throw new Error(`${name} isn't one of the deployed apps`);
-  if (!dependenciesChanged && fs.existsSync(`${target}/node_modules/.pnpm`)) await refreshWorkspacePackages(target);
-  else {
+  if (!dependenciesChanged && fs.existsSync(`${target}/node_modules/.pnpm`)) {
+    await refreshWorkspacePackages(target);
+    // The app reads its version from it; with the same dependencies, a deploy writes the same file.
+    fs.copyFileSync(`${REPO}/apps/${name}/package.json`, `${target}/package.json`);
+  } else {
     fs.rmSync(target, { recursive: true, force: true });
     await run(
       'pnpm',
