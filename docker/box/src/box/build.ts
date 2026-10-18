@@ -309,11 +309,30 @@ function withoutTypeCheck(app: string): string {
   return relative(`${REPO}/apps/${app}`, `${RUN}/${app}-nest-cli.json`);
 }
 
+// Unminified, the build takes about 11 s less. Next reads next.config.js before the playground's next.config.mjs,
+// so a wrapper there turns minifying off for this build only.
 export async function buildBridge(): Promise<void> {
-  await run('node_modules/.bin/next', ['build', '--turbopack', '--experimental-build-mode', 'compile'], {
-    cwd: `${REPO}/playground/nextjs`,
-    env: { ...vars, NODE_OPTIONS: '', NEXT_TELEMETRY_DISABLED: '1' },
-  });
+  const dir = `${REPO}/playground/nextjs`;
+  const wrapper = `${dir}/next.config.js`;
+  const wrap = !fs.existsSync(wrapper) && fs.existsSync(`${dir}/next.config.mjs`);
+  if (wrap)
+    fs.writeFileSync(
+      wrapper,
+      `module.exports = async (...args) => {
+  const { default: config } = await import('./next.config.mjs');
+  const resolved = typeof config === 'function' ? await config(...args) : config;
+  return { ...resolved, experimental: { ...resolved.experimental, turbopackMinify: false } };
+};
+`
+    );
+  try {
+    await run('node_modules/.bin/next', ['build', '--turbopack', '--experimental-build-mode', 'compile'], {
+      cwd: dir,
+      env: { ...vars, NODE_OPTIONS: '', NEXT_TELEMETRY_DISABLED: '1' },
+    });
+  } finally {
+    if (wrap) fs.rmSync(wrapper);
+  }
 }
 
 async function workspacePackages(): Promise<Map<string, string>> {
