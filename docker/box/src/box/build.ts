@@ -12,6 +12,7 @@ import { allSettled, output, readJson, run, step, vars } from './runtime.ts';
 
 const APPS = ['@novu/api-service', '@novu/worker', '@novu/dashboard'];
 const FRAMEWORK = '@novu/framework';
+const FRAMEWORK_TYPES_STALE = `${DATA}/.framework-declarations-stale`;
 
 // What an apply changed, so that only that is built. A bake, `--full`, an install and an apply after an
 // interrupted one build everything instead.
@@ -80,10 +81,14 @@ async function buildLibraries(
       libs.filter((lib) => changes.affected.includes(lib)),
       changes.files
     );
-  if (libs.length)
-    await nx(['run-many', '-t', 'build', `--projects=${libs.join(',')}`, '--excludeTaskDependencies', '--parallel=4']);
+  if (libs.length) await buildViaNx(libs);
 
   return true;
+}
+
+async function buildViaNx(libs: ReadonlyArray<string>): Promise<void> {
+  await nx(['run-many', '-t', 'build', `--projects=${libs.join(',')}`, '--excludeTaskDependencies', '--parallel=4']);
+  if (libs.includes(FRAMEWORK)) fs.rmSync(FRAMEWORK_TYPES_STALE, { force: true });
 }
 
 // The libraries the projects run on, which nx's cache replays when unchanged.
@@ -137,7 +142,7 @@ async function buildChangedLibraries(
     const batch = nextBatch(pending, dirty, below);
     if (!batch.length) continue;
     const declared = new Map(batch.map((lib) => [lib, declarations(root(lib))]));
-    await buildBatch(batch, batch.includes(FRAMEWORK) && frameworkTypesUnread(touched, below));
+    await buildBatch(batch, below, batch.includes(FRAMEWORK) && frameworkTypesUnread(touched, below));
     for (const lib of batch) {
       pending.delete(lib);
       rebuilt.add(lib);
@@ -173,11 +178,18 @@ function nextBatch(
   return batch;
 }
 
-async function buildBatch(batch: ReadonlyArray<string>, frameworkCodeOnly: boolean): Promise<void> {
-  const viaNx = batch.filter((lib) => !(frameworkCodeOnly && lib === FRAMEWORK));
-  if (viaNx.length)
-    await nx(['run-many', '-t', 'build', `--projects=${viaNx.join(',')}`, '--excludeTaskDependencies', '--parallel=4']);
+// The framework first: a library in the batch that bundles it must bundle its new code.
+async function buildBatch(
+  batch: ReadonlyArray<string>,
+  below: (project: string) => ReadonlySet<string>,
+  frameworkCodeOnly: boolean
+): Promise<void> {
   if (frameworkCodeOnly) await step('build @novu/framework without declarations', buildFrameworkCode);
+  const readsFramework = batch.some((lib) => lib !== FRAMEWORK && below(lib).has(FRAMEWORK));
+  if (!batch.includes(FRAMEWORK) && readsFramework && fs.existsSync(FRAMEWORK_TYPES_STALE))
+    await step('build @novu/framework with the declarations an earlier apply skipped', () => buildViaNx([FRAMEWORK]));
+  const viaNx = batch.filter((lib) => !(frameworkCodeOnly && lib === FRAMEWORK));
+  if (viaNx.length) await buildViaNx(viaNx);
 }
 
 function dependenciesOf(graph: Graph): (project: string) => ReadonlySet<string> {
@@ -206,7 +218,10 @@ function compilesFileByFile(root: string): boolean {
     .map(([, script]) => script)
     .join(' ');
 
-  return /\btsc\b/.test(scripts) && !/\b(tsup|rollup|vite|esbuild|webpack)\b|\bnode\s/.test(scripts);
+  // Another script it runs (`pnpm run bundle`) isn't read, so it may bundle.
+  const bundles = /\b(tsup|rollup|vite|esbuild|webpack)\b|\bnode\s|\brun\s+(?!build[:\s]|build$)/;
+
+  return /\btsc\b/.test(scripts) && !bundles.test(scripts);
 }
 
 function declarations(root: string): string {
@@ -225,7 +240,8 @@ function declarations(root: string): string {
 }
 
 // Nothing in the box type-checks against @novu/framework but the libraries tsc builds, so it can skip its
-// declarations (90 of its 92 s) unless a library changed in this apply compiles against them. The old ones stay.
+// declarations (90 of its 92 s) unless a library changed in this apply compiles against them. The old ones stay, and
+// FRAMEWORK_TYPES_STALE says so: the next apply that builds such a library builds the framework's first.
 function frameworkTypesUnread(touched: ReadonlySet<string>, below: (project: string) => ReadonlySet<string>): boolean {
   const readers = [...touched].filter((lib) => lib !== FRAMEWORK && below(lib).has(FRAMEWORK));
 
@@ -241,6 +257,7 @@ async function buildFrameworkCode(): Promise<void> {
     `import configs from '${REPO}/packages/framework/tsup.config.ts';\n` +
       `export default configs.map((config) => ({ ...config, dts: false, clean: ['!**/*.d.{ts,cts,mts}'] }));\n`
   );
+  fs.writeFileSync(FRAMEWORK_TYPES_STALE, '');
   await run('node_modules/.bin/tsup', ['--config', config], {
     cwd: `${REPO}/packages/framework`,
     env: { ...vars, NODE_OPTIONS: '', NODE_ENV: 'production' },
@@ -443,8 +460,12 @@ async function refreshWorkspacePackages(target: string): Promise<void> {
   for (const entry of fs.readdirSync(store).filter((name) => name.includes('@file+'))) {
     const name = entry.slice(0, entry.indexOf('@file+', 1)).replace('+', '/');
     const copy = `${store}/${entry}/node_modules/${name}`;
-    for (const file of fs.readdirSync(copy).filter((file) => file !== 'node_modules')) {
-      const source = `${workspace.get(name)}/${file}`;
+    const dir = workspace.get(name);
+    if (!dir) continue;
+    // The source's entries too: a build may add one (an `esm/` folder).
+    const entries = new Set([...fs.readdirSync(copy), ...fs.readdirSync(dir)]);
+    for (const file of [...entries].filter((file) => file !== 'node_modules')) {
+      const source = `${dir}/${file}`;
       fs.rmSync(`${copy}/${file}`, { recursive: true, force: true });
       if (fs.existsSync(source)) fs.cpSync(source, `${copy}/${file}`, { recursive: true });
     }
