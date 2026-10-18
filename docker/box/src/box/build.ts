@@ -142,7 +142,10 @@ async function buildChangedLibraries(
     const batch = nextBatch(pending, dirty, below);
     if (!batch.length) continue;
     const declared = new Map(batch.map((lib) => [lib, declarations(root(lib))]));
-    await buildBatch(batch, below, batch.includes(FRAMEWORK) && frameworkTypesUnread(touched, below));
+    const readsFrameworkTypes = batch.some(
+      (lib) => lib !== FRAMEWORK && below(lib).has(FRAMEWORK) && (touched.has(lib) || compilesFileByFile(root(lib)))
+    );
+    await buildBatch(batch, readsFrameworkTypes, batch.includes(FRAMEWORK) && frameworkTypesUnread(touched, below));
     for (const lib of batch) {
       pending.delete(lib);
       rebuilt.add(lib);
@@ -181,12 +184,11 @@ function nextBatch(
 // The framework first: a library in the batch that bundles it must bundle its new code.
 async function buildBatch(
   batch: ReadonlyArray<string>,
-  below: (project: string) => ReadonlySet<string>,
+  readsFrameworkTypes: boolean,
   frameworkCodeOnly: boolean
 ): Promise<void> {
   if (frameworkCodeOnly) await step('build @novu/framework without declarations', buildFrameworkCode);
-  const readsFramework = batch.some((lib) => lib !== FRAMEWORK && below(lib).has(FRAMEWORK));
-  if (!batch.includes(FRAMEWORK) && readsFramework && fs.existsSync(FRAMEWORK_TYPES_STALE))
+  if (!batch.includes(FRAMEWORK) && readsFrameworkTypes && fs.existsSync(FRAMEWORK_TYPES_STALE))
     await step('build @novu/framework with the declarations an earlier apply skipped', () => buildViaNx([FRAMEWORK]));
   const viaNx = batch.filter((lib) => !(frameworkCodeOnly && lib === FRAMEWORK));
   if (viaNx.length) await buildViaNx(viaNx);
