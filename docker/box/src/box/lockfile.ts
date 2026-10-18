@@ -19,20 +19,37 @@ interface Lockfile {
 
 const PROD = ['dependencies', 'optionalDependencies'];
 
+export interface Relocked {
+  // Built with a changed toolchain or dependency: its own devDependencies and the root's count (SWC, tsc, Nest's CLI).
+  readonly rebuild: ReadonlyArray<string>;
+  // Deployed apps whose production dependencies changed: a `pnpm deploy`.
+  readonly redeploy: ReadonlyArray<string>;
+}
+
 // The code processes whose locked dependencies differ between the two commits. nx can't tell: given the changed
 // files, it reads a lockfile change as touching every project, or (in its `auto` mode) none.
-export async function relockedProcesses(from: string, to: string): Promise<Array<string>> {
+export async function relockedProcesses(from: string, to: string): Promise<Relocked> {
   try {
     const [before, after] = await Promise.all([readLockfile(from), readLockfile(to)]);
+    const changed = (dir: string, withDev: boolean) => locked(before, dir, withDev) !== locked(after, dir, withDev);
+    const toolchain = changed('.', true);
 
-    return PROCESS_DIRS.filter(
-      ({ dir, deployed }) => locked(before, dir, !deployed) !== locked(after, dir, !deployed)
-    ).map(({ name }) => name);
+    return {
+      rebuild: PROCESS_DIRS.filter(({ dir }) => toolchain || changed(dir, true)).map(({ name }) => name),
+      redeploy: PROCESS_DIRS.filter(({ dir, deployed }) => deployed && changed(dir, false)).map(({ name }) => name),
+    };
   } catch (error) {
     log(`WARN: couldn't compare the lockfiles (${messageOf(error)}); every app counts as changed`);
 
-    return PROCESS_DIRS.map(({ name }) => name);
+    return everyProcess();
   }
+}
+
+export function everyProcess(): Relocked {
+  return {
+    rebuild: PROCESS_DIRS.map(({ name }) => name),
+    redeploy: PROCESS_DIRS.filter(({ deployed }) => deployed).map(({ name }) => name),
+  };
 }
 
 async function readLockfile(commit: string): Promise<Lockfile> {
@@ -43,8 +60,7 @@ async function readLockfile(commit: string): Promise<Lockfile> {
 }
 
 // What `dir` installs: its dependencies, theirs, and those of the workspace packages it links, each with its
-// resolution and what it links to. devDependencies count only for `dir` itself, and only when it isn't a
-// `pnpm deploy --prod` (bundlers read them).
+// resolution and what it links to. devDependencies count only for `dir` itself, and only when asked.
 function locked(lock: Lockfile, dir: string, withDev: boolean): string {
   const packages = new Map<string, unknown>();
   const dirs = new Map<string, unknown>();

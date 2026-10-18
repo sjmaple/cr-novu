@@ -18,7 +18,7 @@ import {
 } from './build.ts';
 import { fetchRef, gitWithToken, mergeOntoBaked, unbundle } from './git.ts';
 import { withLock } from './lock.ts';
-import { relockedProcesses } from './lockfile.ts';
+import { everyProcess, relockedProcesses } from './lockfile.ts';
 import { migrate } from './migrate.ts';
 import { API_HEALTH, APPLIED, APPLYING, BAKED, NX, REPO_URL } from './paths.ts';
 import { CODE_PROCESSES, DEPLOYED_APPS, PATH_PROCESSES, PROCESSES, PROJECT_PROCESSES } from './processes.ts';
@@ -122,11 +122,15 @@ async function planFor(
 ): Promise<ApplyPlan> {
   const source = files.includes('.source');
   const install = files.some((file) => INSTALL_FILES.includes(file));
-  // nx can't see inside the submodule, so a `.source` bump affects nothing: it reaches every code process.
-  const relocked = install && !source ? await relockedProcesses(from, to) : [];
+  // An interrupted apply may have deployed and built on its own dependencies, which neither commit has.
+  const relocked = !install
+    ? { rebuild: [], redeploy: [] }
+    : interrupted
+      ? everyProcess()
+      : await relockedProcesses(from, to);
   const affected = await affectedProjects(files.filter((file) => file !== 'pnpm-lock.yaml'));
-  const build = await appsToBuild(files, affected, install, relocked);
-  const restart = new Set([...build.flatMap((project) => PROJECT_PROCESSES[project] ?? []), ...relocked]);
+  const build = await appsToBuild(files, affected, install, relocked.rebuild);
+  const restart = new Set([...build.flatMap((project) => PROJECT_PROCESSES[project] ?? []), ...relocked.rebuild]);
   for (const [prefix, name] of Object.entries(PATH_PROCESSES))
     if (files.some((file) => file.startsWith(prefix))) restart.add(name);
   const changes =
@@ -138,8 +142,9 @@ async function planFor(
     install,
     build,
     enterprise: install || files.some((file) => file.startsWith('enterprise/packages/')),
+    // nx can't see inside the submodule, so a `.source` bump affects nothing: it reaches every code process.
     restart: runnable(source ? CODE_PROCESSES : restart),
-    reinstall: Object.keys(DEPLOYED_APPS).filter((name) => source || relocked.includes(name)),
+    reinstall: Object.keys(DEPLOYED_APPS).filter((name) => source || relocked.redeploy.includes(name)),
     changes,
   };
 }
