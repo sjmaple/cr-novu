@@ -22,6 +22,7 @@ const Objects = z.array(z.object({ id: z.string(), hasStoredData: z.boolean().op
 const Applications = z.array(z.object({ id: z.string(), durable_objects: z.object({ namespace_id: z.string() }).nullish() }));
 const Credentials = z.object({ password: z.string() });
 const Catalog = z.object({ repositories: z.record(z.string(), z.array(z.string())) });
+const GcPage = z.object({ last: z.string().nullish() });
 const Manifest = z.object({ artifactType: z.string().optional(), config: z.object({ digest: z.string() }) });
 const SnapshotConfig = z.object({
   snapshot_id: z.string(),
@@ -101,10 +102,13 @@ export async function sweep(env: HostEnv, { dryRun }: { readonly dryRun: boolean
 
   const deleted: Array<string> = [];
   if (deleting && !blocked && unreachable.length) {
+    // Deleting the tags leaves the manifest (listed by its digest) and frees nothing; the layer GC then frees only
+    // blobs no manifest references.
     for (const snapshot of unreachable) {
       await registry.delete(snapshot.repo, snapshot.tag);
       if (snapshot.setTag && (await registry.digest(snapshot.repo, snapshot.setTag)) === snapshot.digest)
         await registry.delete(snapshot.repo, snapshot.setTag);
+      await registry.delete(snapshot.repo, snapshot.digest);
       deleted.push(snapshot.id);
     }
     await registry.collectGarbage();
@@ -219,7 +223,12 @@ async function registryOf(env: HostEnv, push: boolean): Promise<Registry> {
       await (await send('DELETE', `${repo}/manifests/${tag}`, MANIFEST)).body?.cancel();
     },
     collectGarbage: async () => {
-      await (await send('PUT', 'gc/layers')).body?.cancel();
+      for (let last = '', pages = 0; pages < 100; pages++) {
+        const response = await send('PUT', `gc/layers${last ? `?last=${encodeURIComponent(last)}` : ''}`);
+        const next = fromJson(GcPage).parse(await response.text()).last;
+        if (!next || next === last) return;
+        last = next;
+      }
     },
   };
 }
