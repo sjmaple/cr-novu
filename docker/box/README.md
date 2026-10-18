@@ -129,11 +129,14 @@ It builds only what the change needs (`src/box/build.ts`):
   builds, only when the declarations (`.d.ts`) it compiles against changed; for one a bundler builds, always. The
   apps don't recompile for a library change (SWC reads no other files), and the API regenerates its metadata only
   when declarations changed. `@novu/framework` builds without its declarations (90 of its 92 s) unless a library
-  changed in the same apply compiles against them; the old ones stay. A change outside every project (a root
-  config) builds every library the apps use, as a bake does (nx's cache replays the unchanged ones).
-- **The lockfile:** it reinstalls, then redeploys (`pnpm deploy`) and restarts only the apps whose locked
-  dependencies changed, by comparing what each installs at the two commits (`src/box/lockfile.ts`; nx can't tell
-  from a changed lockfile). The API and worker deploy at once, offline first. A changed `package.json` alone
+  changed in the same apply compiles against them; the old ones stay, marked stale, and the next apply that builds
+  such a library builds the framework's declarations first. A change outside every project (a root config) builds
+  every library the apps use, as a bake does (nx's cache replays the unchanged ones).
+- **The lockfile:** it reinstalls, then rebuilds and restarts only the apps whose locked dependencies changed, by
+  comparing what each installs at the two commits (`src/box/lockfile.ts`; nx can't tell from a changed lockfile).
+  Its devDependencies and the root's count (a new SWC, TypeScript or Nest CLI rebuilds every app); only a change to
+  an app's production dependencies redeploys it (`pnpm deploy`). The API and worker deploy at once, offline first.
+  After an interrupted apply, a lockfile change rebuilds and redeploys everything. A changed `package.json` alone
   doesn't reinstall: a dependency change always changes the lockfile.
 
 Add `--full` to install, build and restart everything, as a bake does (about 5 minutes), when the box behaves in a
@@ -205,7 +208,8 @@ After an hour without requests the box saves itself to a snapshot and stops; the
 page and the box is back with its data. `BOX_IDLE_MINUTES=4 node docker/box/src/cli/main.ts deploy` sets a
 shorter wait for every box, to test the sleep; the next deploy without it goes back to 60. Asking a box for its
 state (`/__box/state`) doesn't count as a request. While a box saves, its address and every control call but
-`state`, `down` and `delete` answer 503 with `Retry-After` (the CLI waits); a `delete` during a save wins.
+`state`, `down`, `delete`, `discard` and `adopt` answer 503 with `Retry-After` (the CLI waits); a `delete`, `discard`
+or `adopt` during a save wins.
 
 `state` gives the box's `phase`, with `since` and the last `error`: `new` (never started, or its bake failed:
 `error` holds the end of `/data/logs/up.log`, and the next `up` bakes again), `baking`, `running`, `saving`,
@@ -233,7 +237,8 @@ doesn't contain `base`'s commit may conflict; rebase it on `next`.
 Cloudflare deletes a snapshot 30 days after it was made or last restored, and nothing extends it. The workflow
 keeps `base` fresh (see "Per pull request"): every push to `next` refreshes it, and it's rebaked nightly, which also
 moves it onto the current image, since a snapshot only restores on the image it was taken on. A box whose snapshot
-can't be restored forgets it and is `lost`; `up` says so, and the next `up` bakes.
+can't be restored forgets it and is `lost`. A PR box, and your branch's box (`up` without `--box`), then start
+again from `base` and apply the PR or your checkout; `up --box <name>` says so, and the next `up` bakes.
 
 #### Snapshots
 
@@ -243,19 +248,23 @@ and its metadata lists its whole chain back to the first full snapshot (about 3.
 continues `base`'s chain. Cloudflare documents no rule for deleting an ancestor, so the host's sweep
 (`src/cloud/sweep.ts`, hourly, and after each save of `base` from the workflow) deletes by reachability:
 
-- It keeps every snapshot in the chain of each box's current snapshot (every Box Durable Object that stores
-  anything, and every box the host lists), and of every snapshot under an hour old (a save whose id its box hasn't
-  stored yet), and those of other container applications that still exist.
-- It deletes the rest: the snapshots of this host's container application and of applications that no longer exist.
+- It keeps every snapshot in the chain of each box's current snapshot (`restore_chain`, and each parent; every Box
+  Durable Object that stores anything, and every box the host lists, read from what they store), of the snapshot a
+  rebake replaced on `base` in the last hour (a PR box may have just read it), and of every snapshot under an hour
+  old, or without a time (a save whose id its box hasn't stored yet).
+- It deletes the rest of this host's container application's snapshots; it never touches another application's.
   Deleting a snapshot's tags often leaves the manifest (listed by its digest), so it deletes the tags, then the
   manifest by digest, then runs the registry's layer GC. Whether that frees the storage is unverified: after 41
   deletes the GC reported nothing deleted and every deleted snapshot's layer blob still answered.
-- It deletes nothing when a box's current snapshot isn't in the registry, or no box has a snapshot.
+- It deletes nothing when a box's current snapshot isn't in the registry, or `base` has no snapshot. A box asleep
+  for over 30 days whose snapshot is gone doesn't count: Cloudflare expired it.
 - It deletes only when the host's `SWEEP` var (`wrangler.jsonc`) is `delete`; otherwise it reports what it would
   delete. `POST /__box/sweep` (`?dry-run` to only report) runs it and answers the report.
 
 A refresh adds a delta to `base`'s chain (0.4 GB for 56 changed files), and nothing in that chain can go while
 `base` uses it; the nightly rebake starts a new chain, and the old one goes once no box started from it is left.
+The sweep's report also gives each box's chain (snapshots, GB of deltas, when its first snapshot was baked), which
+the refresh reads.
 
 Limits for now: requests the box makes to its own public address go out through the internet; a host redeploy with a new
 image is untested with boxes running. A `sync` whose rebuild runs longer than 5 minutes (a playground change, with
@@ -269,7 +278,9 @@ its log:
 boxes on demand only:
 
 - Adding the `box` label starts the box from `base` (as `up --box pr-<n> --from base`; it bakes `next`
-  when `base` has no snapshot) and applies the PR's head commit. Only someone with write access to `novuhq/novu`
+  when `base` has no snapshot) and applies the PR's head commit as soon as the box answers (the apply restarts
+  the API anyway; the comment waits for a healthy box). A PR box whose snapshot is gone starts from `base` again
+  the same way. Only someone with write access to `novuhq/novu`
   can start one: the workflow checks who added the label, on every run, and otherwise only says so in the PR. PRs
   from forks get no box (`pull_request` gives them no OIDC token; the workflow doesn't use `pull_request_target`).
 - Every push applies the new head (`box apply <sha>`). One run per PR at a time: a newer push cancels the older
@@ -287,11 +298,17 @@ boxes on demand only:
   onto the new `next` and builds only the PR's changes, then saves it (3.7 minutes for 56 changed files that
   rebuild the API, worker and dashboard, of which the apply is 2.5). One refresh runs at a time; pushes during it
   leave one waiting run, for the newest `next`, and a running refresh is never cancelled (that would lose the
-  save). When `base` can't be refreshed (no snapshot, a snapshot from an older image, a failed apply), it's baked
-  again instead.
+  save). A `base` already on `next`'s head is stopped again without a save. A failed apply (a `next` that doesn't
+  build) stops `base` without a save (`/__box/discard`), so it keeps its last snapshot, and the job fails; the next
+  push tries again. It rebakes instead when `base` has no snapshot or doesn't wake (a snapshot from an older image),
+  when the merge changes what the bake sets up (`docker/box/`, `.nvmrc`, the pnpm version), or when `base`'s chain
+  is past 30 snapshots, 5 GB of deltas or 26 hours since its bake (a skipped nightly rebake).
 - Nightly, the workflow also rebakes `base` from `next` (`rebake`), starting a new snapshot chain, so refreshes
-  don't grow one chain forever, and keeping its snapshot from expiring. A push that arrives while the rebake waits
-  to start replaces it with a refresh. `cleanup`, `rebake` and `refresh` also run by hand with "Run workflow".
+  don't grow one chain forever, and keeping its snapshot from expiring. It bakes in a box of its own,
+  `base-next`, saves it, and only then does `base` take over that snapshot (`/__box/adopt`) and `base-next` go:
+  `base` always has a snapshot, and a failed bake leaves the old one. A push that arrives while the rebake waits to
+  start replaces it with a refresh (the 26-hour rule catches up). `cleanup`, `rebake` and `refresh` also run by
+  hand with "Run workflow".
 
 `docker/box/src/ci/ci.ts` does all of it, through the CLI's cloud target (`src/cli/cloud.ts`);
 the workflow runs `npm ci` in `docker/box` first. The workflow holds no secret. It signs in to the boxes with its
