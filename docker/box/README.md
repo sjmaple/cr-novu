@@ -230,8 +230,9 @@ continues `base`'s chain. Cloudflare documents no rule for deleting an ancestor,
   anything, and every box the host lists), and of every snapshot under an hour old (a save whose id its box hasn't
   stored yet), and those of other container applications that still exist.
 - It deletes the rest: the snapshots of this host's container application and of applications that no longer exist.
-  Deleting a snapshot's tags frees nothing (the manifest stays, listed by its digest), so it deletes the tags, then
-  the manifest by digest, then runs the registry's layer GC.
+  Deleting a snapshot's tags often leaves the manifest (listed by its digest), so it deletes the tags, then the
+  manifest by digest, then runs the registry's layer GC. Whether that frees the storage is unverified: after 41
+  deletes the GC reported nothing deleted and every deleted snapshot's layer blob still answered.
 - It deletes nothing when a box's current snapshot isn't in the registry, or no box has a snapshot.
 - It deletes only when the host's `SWEEP` var (`wrangler.jsonc`) is `delete`; otherwise it reports what it would
   delete. `POST /__box/sweep` (`?dry-run` to only report) runs it and answers the report.
