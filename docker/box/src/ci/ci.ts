@@ -25,6 +25,7 @@ import { BOX_CLI, boxWorker, DOMAIN, detached, OIDC_AUDIENCE } from '../shared/n
 import { canWrite, comment, github, LABEL, labeler, REPO, unlessMissing } from './github.ts';
 
 const MAX_BOXES = 30;
+const REBAKE_BOX = 'base-next';
 const APPLY_MINUTES = 20;
 const SETTLE_SECONDS = 3 * 60;
 const CLI = 'node docker/box/src/cli/main.ts';
@@ -253,35 +254,114 @@ async function cleanup(): Promise<number> {
   return failed ? 1 : 0;
 }
 
-// Deletes base and bakes it from next, then saves it: a new snapshot chain, younger than Cloudflare's 30 days, so the
-// refreshes' deltas don't pile up forever and the sweep can delete the old chain once no box needs it. Until it's back
-// (about 20 minutes), a new PR box bakes next itself.
+// Bakes next in a box of its own and saves it, then base takes over that snapshot: a new snapshot chain, younger than
+// Cloudflare's 30 days, so the refreshes' deltas don't pile up forever and the sweep can delete the old chain once no
+// box needs it. Until the new snapshot is saved, base keeps its own, and a failed bake leaves it.
 async function rebake(): Promise<number> {
-  const base = target('base');
-  await base.delete();
-  await base.up({ ref: 'next' });
+  const baking = target(REBAKE_BOX);
+  try {
+    await baking.delete();
+    await baking.up({ ref: 'next' });
+    if ((await baking.down()) !== 0) throw new Error(`${baking.name} stopped without a new snapshot`);
+    const snapshot = (await baking.state())?.snapshot?.id;
+    if (!snapshot) throw new Error(`${baking.name} has no snapshot`);
+    await target('base').adopt(snapshot);
+  } finally {
+    await baking.delete().catch((error: unknown) => log(`WARN: deleting ${baking.name}: ${messageOf(error)}`));
+  }
 
-  return saved(await base.down());
+  return saved(0);
 }
 
-// Puts next's head on base and saves it, so a new PR box starts from it and builds only its own changes. When base
-// can't be refreshed (no snapshot, a snapshot that doesn't restore on this image, a failed apply), it's baked again
-// instead: a half-applied base would be saved by its idle sleep, and every new PR box would start from that.
+// Puts next's head on base and saves it, so a new PR box starts from it and builds only its own changes. A failed
+// apply stops base without a save, so it keeps its last snapshot, and the next push tries again; a half-applied
+// base would be saved by its idle sleep, and every new PR box would start from that.
 async function refresh(): Promise<number> {
   const base = target('base');
   const { sha } = await github(`/repos/${REPO}/commits/next`, z.object({ sha: z.string() }));
+  const tooOld = await chainTooLong();
+  if (tooOld) return rebakeBecause(tooOld);
   try {
     await base.readyFor({ reachable: true });
-    const { baked } = decode(BoxState, await base.boxOutput(['state']), '`box state`');
-    if (baked?.sha === sha) log(`${base.name} is on next's head ${sha.slice(0, 10)} already`);
-    else log(await apply(base, sha, { baseline: true }));
   } catch (error) {
-    log(`WARN: refreshing ${base.name} failed, so it is baked again: ${messageOf(error)}`);
-
-    return rebake();
+    return rebakeBecause(`${base.name} doesn't wake: ${messageOf(error)}`);
   }
+  let recipe: string | null = null;
+  try {
+    const { baked, applied, applying } = decode(BoxState, await base.boxOutput(['state']), '`box state`');
+    if (!baked) throw new Error(`${base.name} isn't baked`);
+    if (baked.sha === sha && !applied && !applying) {
+      log(`${base.name} is on next's head ${sha.slice(0, 10)} already`);
+      await base.discard();
 
-  return saved(await base.down());
+      return 0;
+    }
+    recipe = await recipeChange(baked.sha, sha);
+    if (!recipe) {
+      log(await apply(base, sha, { baseline: true }));
+
+      return saved(await base.down());
+    }
+  } catch (error) {
+    log(`ERROR: refreshing ${base.name} failed, so it keeps its last snapshot: ${messageOf(error)}`);
+    await base.discard();
+
+    return 1;
+  }
+  await base.discard();
+
+  return rebakeBecause(recipe);
+}
+
+function rebakeBecause(why: string): Promise<number> {
+  log(`${why}: baking base again instead`);
+
+  return rebake();
+}
+
+// Past these, a refresh rebakes instead: a long chain may restore slower, and it keeps every delta in storage. Past
+// a day, a nightly rebake was skipped (a refresh that waited replaced it).
+const CHAIN_MAX = { snapshots: 30, deltaGigabytes: 5, hours: 26 };
+
+async function chainTooLong(): Promise<string | null> {
+  const report = await hostBoxes('sweep?dry-run', SweepAnswer, { method: 'POST', token: boxToken }).catch(
+    (error: unknown) => {
+      log(`WARN: no snapshot report, so base's chain isn't checked: ${messageOf(error)}`);
+
+      return null;
+    }
+  );
+  if (!report) return null;
+  const root = report.roots.find((entry) => entry.box === 'base');
+  if (!root?.snapshot) return 'base has no snapshot';
+  if (report.missing.some((entry) => entry.startsWith('base:'))) return "base's snapshot isn't in the registry";
+  const { chain } = root;
+  if (!chain) return null;
+  const hours = chain.began ? (Date.now() - Date.parse(chain.began)) / 3_600_000 : 0;
+  if (chain.snapshots > CHAIN_MAX.snapshots) return `base's chain has ${chain.snapshots} snapshots`;
+  if (chain.deltaGigabytes > CHAIN_MAX.deltaGigabytes) return `base's chain has ${chain.deltaGigabytes} GB of deltas`;
+  if (hours > CHAIN_MAX.hours) return `base was baked ${Math.round(hours)} hours ago`;
+
+  return null;
+}
+
+// What a bake sets up that an apply doesn't redo: the box's own code and image, Node, pnpm.
+const RECIPE = [/^docker\/box\//, /^\.nvmrc$/];
+
+async function recipeChange(from: string, to: string): Promise<string | null> {
+  const { files } = await github(
+    `/repos/${REPO}/compare/${from}...${to}`,
+    z.object({ files: z.array(z.object({ filename: z.string(), patch: z.string().optional() })).default([]) })
+  );
+  // GitHub lists at most 300 files.
+  if (files.length >= 300) return `${files.length}+ files changed`;
+  const changed = files.find(
+    ({ filename, patch = '' }) =>
+      RECIPE.some((pattern) => pattern.test(filename)) ||
+      (filename === 'package.json' && /^[-+]\s*"packageManager"/m.test(patch))
+  );
+
+  return changed ? `the merge changes ${changed.filename}, which the bake uses` : null;
 }
 
 async function saved(code: number): Promise<number> {

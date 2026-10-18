@@ -127,6 +127,10 @@ export class Box extends DurableObject<HostEnv> {
         return json(await this.#sleepSoon());
       case 'POST /__box/destroy':
         return json(await this.#destroy());
+      case 'POST /__box/discard':
+        return json(await this.#discard());
+      case 'POST /__box/adopt':
+        return json(await this.#adopt(url));
       case 'POST /__box/up':
         return this.#unlessSaving(request, async () => json(await this.#up(request, url)));
       // The body is read before the save check: reading it lets the alarm in, which may begin a save.
@@ -364,6 +368,39 @@ export class Box extends DurableObject<HostEnv> {
     } finally {
       this.#saving = false;
     }
+  }
+
+  // Stops the box without saving, so it wakes from the snapshot it woke from: a failed refresh of base leaves base as
+  // it was.
+  async #discard(): Promise<StateAnswer> {
+    const life = await this.#reconcile();
+    if (!this.#container.running) return { state: life.phase };
+    this.#stopUnsaved();
+    await this.#container.destroy('discarded');
+
+    return { state: (await setLife(this.ctx.storage, stopped(life, 'stopped without a save (discard)'))).phase };
+  }
+
+  // Takes over another box's saved snapshot, dropping whatever this box runs: a rebake bakes in another box, so
+  // base is replaced only once the new snapshot exists.
+  async #adopt(url: URL): Promise<StateAnswer> {
+    const id = url.searchParams.get('snapshot');
+    if (!id) throw new Error('adopt needs ?snapshot=<id>');
+    this.#stopUnsaved();
+    if (this.#container.running) await this.#container.destroy('replaced');
+    const storage = this.ctx.storage;
+    const before = snapshotOf(await lifeOf(storage));
+    if (before && before.id !== id) await storage.put('replaced', { id: before.id, at: Date.now() } satisfies Replaced);
+    await storage.put('origin', url.origin);
+    await setLife(storage, { phase: 'asleep', since: Date.now(), snapshot: { id, name: `adopted ${id}` }, error: null });
+
+    return { state: 'asleep', snapshot: id };
+  }
+
+  // A save that runs stores nothing, and a stop doesn't count as a failed restore.
+  #stopUnsaved(): void {
+    this.#generation++;
+    this.#restoring = null;
   }
 
   async #destroy(): Promise<StateAnswer> {

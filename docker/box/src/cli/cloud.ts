@@ -61,6 +61,8 @@ export interface CloudTarget {
   readonly mailUrl: string;
   readonly up: (options: UpOptions) => Promise<number>;
   readonly down: () => Promise<number>;
+  readonly discard: () => Promise<void>;
+  readonly adopt: (snapshot: string) => Promise<void>;
   readonly delete: () => Promise<number>;
   readonly ready: () => Promise<void>;
   readonly box: (args: ReadonlyArray<string>, options?: BoxCall) => Promise<number>;
@@ -241,6 +243,15 @@ export function cloudTarget(options: CloudOptions): CloudTarget {
     mailUrl: `${origin}/mail`,
     up,
     down,
+    async discard() {
+      log(`${worker}: stopping it without a save`);
+      await call('/discard', { method: 'POST' });
+    },
+    async adopt(snapshot) {
+      if (!(await state())) await hostBoxes(`boxes/${box}`, z.unknown(), { method: 'PUT', token });
+      log(`${worker}: taking over snapshot ${snapshot}`);
+      await call(`/adopt?snapshot=${encodeURIComponent(snapshot)}`, { method: 'POST' });
+    },
     async delete() {
       log(`${worker}: stopping and forgetting the box, then deleting its Worker`);
       await hostBoxes(`boxes/${box}`, z.unknown(), { method: 'DELETE', token });
