@@ -92,7 +92,7 @@ What differs, or is still a workaround, because the box runs on Cloudflare (`src
 | GitHub token | Not in the app's environment | A bake or apply holds a token (the host's read-only `GITHUB_READ_TOKEN`, or the caller's when the host has none) and gives it only to git's fetches, for github.com only. PR code runs as the same user while it installs, so a compromised dependency's install script in a PR could read the read-only token | - | Fetch in a step of its own before any PR code runs, or the Worker adds the token to requests to GitHub on the way out |
 | Calls to its own address | Internal | `API_ROOT_URL` and S3 links are the public address, so the box's calls to itself go out to the internet and back | Extra latency on those calls | Route them back inside the Worker |
 | Uptime | Always on | Sleeps after 1 h without requests and wakes in 35 to 50 s; a Cloudflare host restart loses changes since the last save | The first request after a sleep waits | - |
-| Snapshot storage | - | Each box keeps its snapshots until 30 days after its last use; unknown whether they count toward the 50 GB account image limit, or what they cost | - | Ask Cloudflare |
+| Snapshot storage | - | Snapshots are delta chains in the account's registry; the host's sweep deletes those no box's chain needs (README, "Snapshots"). Unknown whether they count toward the 50 GB account image limit, what they cost, and whether Cloudflare keeps an ancestor's data a descendant needs | - | Ask Cloudflare |
 
 ### Target setup once boxes have a domain (NV-9059)
 
@@ -103,7 +103,7 @@ The `workers.dev` setup is a workaround for having no domain. With one, the host
 2. **A host per part,** one wildcard level deep for the free certificate: `<box>.<domain>` (dashboard),
    `<box>-api.<domain>`, `<box>-ws.<domain>`, `<box>-s3.<domain>`, `<box>-mail.<domain>`. The dashboard then calls the
    API cross-origin, as in production, so CORS and cookies are tested again, and the path routing in the Caddyfile goes.
-3. **One base snapshot** (`Box("base")`, baked from `next` weekly) that every new box starts from, within the one class.
+3. **One base snapshot** (`Box("base")`, refreshed on every push to `next` and baked nightly) that every new box starts from, within the one class.
 4. **Not** `novu.co` (production cookies), `novu.sh` (customer `npx novu dev` tunnels) or `novu-staging.co` (shares
    a parent domain with staging, possible Clerk cookie clash).
 

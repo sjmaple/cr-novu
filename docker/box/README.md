@@ -85,11 +85,11 @@ host-only ones. A box runs PR code, and that code can read its environment, so:
 | `NOVU_MANAGED_CLAUDE_API_KEY` (optional) | yes | Anthropic, a workspace with a monthly spend limit, never Novu's production key | Start (runs thalamus and seeds the `box-managed` agent), API, bridge app (real models for its agents) |
 | `BULL_MQ_PRO_NPM_TOKEN` (optional) | yes | Taskforce.sh registry | Bake; without it the box runs open-source BullMQ |
 | `GITHUB_READ_TOKEN` | no | GitHub, fine-grained, `novuhq`, repositories `novu` and `packages-enterprise`, Contents and Checks read | Every bake's and apply's git fetches and CI lookup (never the installs, builds or apps), instead of the caller's token, so no push-capable token reaches a box. Without it, people's calls use their own `gh` token, and CI can't apply |
-| `CLOUDFLARE_API_TOKEN` | no | Cloudflare, Account, Workers Scripts, Edit, on the Novu account only | The `/__box/boxes` routes, which create and delete boxes' Workers |
+| `CLOUDFLARE_API_TOKEN` | no | Cloudflare, Account, Workers Scripts, Edit, and Containers, Edit, on the Novu account only | The `/__box/boxes` routes, which create and delete boxes' Workers; the snapshot sweep (Containers: the registry), see "Snapshots" |
 | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | no | Novu Bot (see "Slack") | The Slack router; without them, boxes get no Slack |
 
 A new fine-grained GitHub token needs an org owner's approval (the current one expires 2027-10-17). Until it's
-approved it reads only public `novuhq/novu`: applying a PR works, but a bake (so the weekly rebake, and a box
+approved it reads only public `novuhq/novu`: applying a PR works, but a bake (so the nightly rebake, and a box
 started when `base` has no snapshot) and an apply that moves `.source` fail at the enterprise submodule.
 
 The dashboard signs in as `agent@novu.co` with `BOX_SEED_PASSWORD`. All boxes share the Clerk
@@ -213,14 +213,33 @@ box started from a snapshot waited 4 to 6 minutes. `up` without `--box` is your 
 starts from `base`, then gets your checkout, committed or not (as `sync`; `--no-sync` skips it). A branch that
 doesn't contain `base`'s commit may conflict; rebase it on `next`.
 
-Cloudflare deletes a snapshot 30 days after it was made or last restored, and nothing extends it. Wake `base`
-(`up --box base`, then `down`) at least every 30 days, or rebake it weekly (`delete --box base`, then
-`up --box base`). The weekly rebake also moves `base` onto the current image, since a snapshot only restores
-on the image it was taken on. A box whose snapshot can't be restored forgets it and is `lost`; `up` says so, and the
-next `up` bakes.
+Cloudflare deletes a snapshot 30 days after it was made or last restored, and nothing extends it. The workflow
+keeps `base` fresh (see "Per pull request"): every push to `next` refreshes it, and it's rebaked nightly, which also
+moves it onto the current image, since a snapshot only restores on the image it was taken on. A box whose snapshot
+can't be restored forgets it and is `lost`; `up` says so, and the next `up` bakes.
 
-Limits for now: each sleep leaves a snapshot image in the account's registry that nothing deletes yet
-(`npx wrangler containers images list`); requests the box makes to its own public address go out through the internet; a host redeploy with a new
+#### Snapshots
+
+Each save is a btrfs delta on the snapshot the box woke from, stored in the account's registry (two tags,
+`rootfs-snapshot-*` and `rootfs-set-*`, on the repository of the box image; `npx wrangler containers images list`),
+and its metadata lists its whole chain back to the first full snapshot (about 3.7 GB). A box started from `base`
+continues `base`'s chain. Cloudflare documents no rule for deleting an ancestor, so the host's sweep
+(`src/cloud/sweep.ts`, hourly, and after each save of `base` from the workflow) deletes by reachability:
+
+- It keeps every snapshot in the chain of each box's current snapshot (every Box Durable Object that stores
+  anything, and every box the host lists), and of every snapshot under an hour old (a save whose id its box hasn't
+  stored yet), and those of other container applications that still exist.
+- It deletes the rest: the snapshots of this host's container application and of applications that no longer exist.
+  Deleting a snapshot's tags frees nothing (the manifest stays, listed by its digest), so it deletes the tags, then
+  the manifest by digest, then runs the registry's layer GC.
+- It deletes nothing when a box's current snapshot isn't in the registry, or no box has a snapshot.
+- It deletes only when the host's `SWEEP` var (`wrangler.jsonc`) is `delete`; otherwise it reports what it would
+  delete. `POST /__box/sweep` (`?dry-run` to only report) runs it and answers the report.
+
+A refresh adds a delta to `base`'s chain (0.4 GB for 56 changed files), and nothing in that chain can go while
+`base` uses it; the nightly rebake starts a new chain, and the old one goes once no box started from it is left.
+
+Limits for now: requests the box makes to its own public address go out through the internet; a host redeploy with a new
 image is untested with boxes running. A `sync` whose rebuild runs longer than 5 minutes (a playground change, with
 `pnpm install`) ends with `fetch failed` and leaves the bundle unapplied; apply it in the background and follow
 its log:
@@ -244,9 +263,16 @@ boxes on demand only:
 - Events on a closed PR create nothing. Every wait ends 5 minutes before the job's 60-minute timeout, so the
   comment says the time ran out instead of staying on "applying".
 - Closing the PR or removing the label deletes the box. At most 30 PR boxes exist at once; over that, the comment
-  says so. Nightly, the workflow deletes `pr-*` boxes whose PR is closed or no longer labeled; on Sundays it
-  rebakes `base` from `next` and saves it, which also keeps its snapshot from expiring. Both run by hand with
-  "Run workflow" (`cleanup`, `rebake`).
+  says so. Nightly, the workflow deletes `pr-*` boxes whose PR is closed or no longer labeled.
+- Every push to `next` refreshes `base` (`refresh`): it wakes `base`, applies `next`'s head with
+  `box apply <sha> --baseline`, which also makes that commit the baked one, so a PR box started from `base` merges
+  onto the new `next` and builds only the PR's changes, then saves it (about 3.5 minutes when the API, worker and
+  dashboard rebuild). One refresh runs at a time; pushes during it leave one waiting run, for the newest `next`, and a
+  running refresh is never cancelled (that would lose the save). When `base` can't be refreshed (no snapshot, a
+  snapshot from an older image, a failed apply), it's baked again instead.
+- Nightly, the workflow also rebakes `base` from `next` (`rebake`), starting a new snapshot chain, so refreshes
+  don't grow one chain forever, and keeping its snapshot from expiring. A push that arrives while the rebake waits
+  to start replaces it with a refresh. `cleanup`, `rebake` and `refresh` also run by hand with "Run workflow".
 
 `docker/box/src/ci/ci.ts` does all of it, through the CLI's cloud target (`src/cli/cloud.ts`);
 the workflow runs `npm ci` in `docker/box` first. The workflow holds no secret. It signs in to the boxes with its
@@ -260,6 +286,7 @@ push-capable GitHub tokens people use. Boxes' Workers are created and deleted on
 | `GET /__box/boxes` | Lists the boxes (every `novu-box-<name>` Worker but the host and the router) |
 | `PUT /__box/boxes/<box>` | Uploads the box's Worker (`thin.ts`, bundled into one module by `box deploy`, bound to the host's Box class) and puts it on workers.dev |
 | `DELETE /__box/boxes/<box>` | Stops the box and forgets it, then deletes its Worker; keeps the Worker (502) when the box didn't stop |
+| `POST /__box/sweep` | Runs the snapshot sweep (see "Snapshots") and answers its report; `?dry-run` only reports |
 
 The Slack router's Worker, `novu-box-slack` (`wrangler.slack.jsonc`), deploys with the host.
 
