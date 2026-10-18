@@ -38,16 +38,17 @@ export interface ApplyOptions {
   readonly ref: string | undefined;
   readonly bundle: string | undefined;
   readonly full: boolean;
+  readonly baseline: boolean;
   readonly token: string | undefined;
 }
 
 export async function apply(options: ApplyOptions): Promise<void> {
-  if (!options.ref === !options.bundle)
-    throw new Error('usage: box apply <pr-number|branch|sha> | --bundle <file> [--full]');
+  if (!options.ref === !options.bundle || (options.baseline && options.bundle))
+    throw new Error('usage: box apply <pr-number|branch|sha> [--baseline] | --bundle <file> [--full]');
   await withLock('apply', () => applyLocked(options));
 }
 
-async function applyLocked({ ref = '', bundle, full: fullAsked, token }: ApplyOptions): Promise<void> {
+async function applyLocked({ ref = '', bundle, full: fullAsked, baseline, token }: ApplyOptions): Promise<void> {
   await poll(storesReady, { timeoutMs: 300_000, what: "the stores aren't ready, or migrate didn't finish," });
   const baked = readJson(BAKED, Baked);
   if (!baked) throw new Error('No golden data in /data. Run `box bake` first.');
@@ -64,6 +65,8 @@ async function applyLocked({ ref = '', bundle, full: fullAsked, token }: ApplyOp
       sha: await mergeOntoBaked(fetched.subject, fetched.sha, baked.sha),
     };
   });
+  if (baseline && target.sha !== target.head)
+    throw new Error(`${target.ref} doesn't contain the baked ${baked.sha.slice(0, 10)}; bake the box again instead`);
   const changed = (await output('git', ['diff', '--name-only', base, target.sha])).split('\n').filter(Boolean);
   const files = [...new Set([...changed, ...(interrupted?.files ?? [])])];
   log(`${files.length} files changed between ${base.slice(0, 10)} and ${target.sha.slice(0, 10)}`);
@@ -84,8 +87,15 @@ async function applyLocked({ ref = '', bundle, full: fullAsked, token }: ApplyOp
   log(`plan: install ${plan.install ? 'yes' : 'no'}, build ${listed(plan.build)}, restart ${listed(plan.restart)}`);
   await applyPlan(plan);
 
-  const applied: Applied = { ...target, base, files: files.length, full, at: new Date().toISOString() };
-  fs.writeFileSync(APPLIED, JSON.stringify(applied, null, 2));
+  if (baseline) {
+    // Later applies, and boxes started from this one's snapshot, merge onto this commit instead of the bake's.
+    const refreshed: Baked = { ref: target.ref, sha: target.sha, at: new Date().toISOString() };
+    fs.writeFileSync(BAKED, JSON.stringify(refreshed, null, 2));
+    fs.rmSync(APPLIED, { force: true });
+  } else {
+    const applied: Applied = { ...target, base, files: files.length, full, at: new Date().toISOString() };
+    fs.writeFileSync(APPLIED, JSON.stringify(applied, null, 2));
+  }
   fs.rmSync(APPLYING);
   writeBoxJson();
   log(`applied ${target.ref} at ${target.sha}`);

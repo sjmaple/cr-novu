@@ -27,10 +27,13 @@ const commands: Record<string, Command> = {
   },
   start: { usage: '', help: "boot every process (the image's default command)", run: () => start() },
   apply: {
-    usage: '<pr|branch|sha> | --bundle <file> [--full]',
-    help: 'on a running box: merge a PR (or a `box sync` bundle) onto the baked commit,\nrebuild and restart what changed; --full rebuilds everything',
-    options: { bundle: { type: 'string' }, full: { type: 'boolean' } },
-    run: ({ args, flag, option }) => done(apply({ ref: args[0], bundle: option('bundle'), full: flag('full'), token })),
+    usage: '<pr|branch|sha> [--baseline] | --bundle <file> [--full]',
+    help: 'on a running box: merge a PR (or a `box sync` bundle) onto the baked commit,\nrebuild and restart what changed; --full rebuilds everything;\n--baseline (a ref that contains the baked commit) then makes it the baked commit (refreshing base)',
+    options: { bundle: { type: 'string' }, full: { type: 'boolean' }, baseline: { type: 'boolean' } },
+    run: ({ args, flag, option }) =>
+      done(
+        apply({ ref: args[0], bundle: option('bundle'), full: flag('full'), baseline: flag('baseline'), token })
+      ),
   },
   state: {
     usage: '',
