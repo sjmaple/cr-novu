@@ -214,15 +214,15 @@ export function cloudTarget(options: CloudOptions): CloudTarget {
     if (!(await hostExists())) throw new Error(`${HOST} isn't deployed; deploy it with \`box deploy\``);
     log(`deploying ${worker}`);
     await hostBoxes(`boxes/${box}`, z.unknown(), { method: 'PUT', token });
-    const answer = await call(`/up?${query}`, { method: 'POST' });
-    const { state: started } = decode(StateAnswer, await answer.text(), `${worker} /up`);
-    log(`${worker}: ${started}${started === 'baking' ? ` ${ref} (11 to 14 minutes)` : ''}`);
     const waits: Record<string, number> = READY_WITHIN_SECONDS;
     try {
+      const answer = await call(`/up?${query}`, { method: 'POST' });
+      const { state: started } = decode(StateAnswer, await answer.text(), `${worker} /up`);
+      log(`${worker}: ${started}${started === 'baking' ? ` ${ref} (11 to 14 minutes)` : ''}`);
       await waitFor(waits[started] ?? READY_WITHIN_SECONDS.running, reachable ? answers : (report) => report.ok);
     } catch (error) {
       // Its own snapshot is gone: now `lost`, it starts from base's.
-      if (!fromBase || started !== 'waking' || snapshot || (await state())?.phase !== 'lost') throw error;
+      if (!fromBase || snapshot || (await state())?.phase !== 'lost') throw error;
       log(`${worker} couldn't restore its snapshot; starting it from ${boxWorker('base')} instead`);
 
       return up(options);

@@ -299,7 +299,12 @@ export class Box extends DurableObject<HostEnv> {
       down: null,
       saveFailed: null,
     });
-    await this.#start({ containerSnapshot: snapshot }, START, origin);
+    await this.#start({ containerSnapshot: snapshot }, START, origin).catch(async (error: unknown) => {
+      // A snapshot that doesn't exist stops the container at once, before `#watchRestore` can see it.
+      if (this.#container.running || messageOf(error).startsWith('start:')) throw error;
+      await this.#forget(snapshot, messageOf(error));
+      throw error;
+    });
     this.#watchRestore(snapshot);
   }
 
@@ -313,10 +318,13 @@ export class Box extends DurableObject<HostEnv> {
       const exited = error instanceof Error && 'exitCode' in error && typeof error.exitCode === 'number';
       if (this.#restoring !== snapshot.id || !(error instanceof Error) || exited) return;
       if (snapshotOf(await lifeOf(this.ctx.storage))?.id !== snapshot.id) return;
-      console.log(`restoring snapshot ${snapshot.id} failed, so it is forgotten: ${error.message}`);
-      const lost = { id: snapshot.id, ...note(error.message) };
-      await setLife(this.ctx.storage, { phase: 'lost', since: Date.now(), lost });
+      await this.#forget(snapshot, error.message);
     });
+  }
+
+  async #forget(snapshot: Snapshot, message: string): Promise<void> {
+    console.log(`restoring snapshot ${snapshot.id} failed, so it is forgotten: ${message}`);
+    await setLife(this.ctx.storage, { phase: 'lost', since: Date.now(), lost: { id: snapshot.id, ...note(message) } });
   }
 
   async #start(from: StartFrom, entrypoint: Array<string>, origin?: string): Promise<void> {
