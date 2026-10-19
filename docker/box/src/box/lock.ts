@@ -20,23 +20,21 @@ export function lockHolder(): LockHolder | null {
   return holder?.pid && isAlive(holder.pid) ? holder : null;
 }
 
-const TAKEOVER = `${LOCK}.takeover`;
-const TAKEOVER_STALE_MS = 30_000;
 const DEAD_HOLDERS_GIT_LOCK = `${REPO}/.git/index.lock`;
 
 function taken(holder: LockHolder | null): Error {
   return new Error(
     holder
       ? `another ${holder.command} is running (pid ${holder.pid}); wait for it to finish`
-      : 'another bake or apply is taking the lock over; try again'
+      : 'another bake or apply took the lock first; try again'
   );
 }
 
-function take(file: string, command: string): boolean {
-  const own = `${file}.${process.pid}`;
+function take(command: string): boolean {
+  const own = `${LOCK}.${process.pid}`;
   fs.writeFileSync(own, JSON.stringify({ pid: process.pid, command, at: new Date().toISOString() }));
   try {
-    fs.linkSync(own, file);
+    fs.linkSync(own, LOCK);
 
     return true;
   } catch (error) {
@@ -47,30 +45,15 @@ function take(file: string, command: string): boolean {
   }
 }
 
-function takeTakeover(command: string): boolean {
-  if (take(TAKEOVER, command)) return true;
-  const age = Date.now() - (fs.statSync(TAKEOVER, { throwIfNoEntry: false })?.mtimeMs ?? Date.now());
-  if (age < TAKEOVER_STALE_MS) return false;
-  fs.rmSync(TAKEOVER, { force: true });
-
-  return take(TAKEOVER, command);
-}
-
 function acquire(command: string): void {
   fs.mkdirSync(RUN, { recursive: true });
-  if (take(LOCK, command)) return;
-  if (lockHolder()) throw taken(lockHolder());
-  if (!takeTakeover(command)) throw taken(null);
-  try {
-    const holder = lockHolder();
-    if (holder) throw taken(holder);
-    log('taking over the lock of a bake or apply that is gone');
-    fs.rmSync(LOCK, { force: true });
-    fs.rmSync(DEAD_HOLDERS_GIT_LOCK, { force: true });
-    if (!take(LOCK, command)) throw taken(lockHolder());
-  } finally {
-    fs.rmSync(TAKEOVER, { force: true });
-  }
+  if (take(command)) return;
+  const holder = lockHolder();
+  if (holder) throw taken(holder);
+  log('taking over the lock of a bake or apply that is gone');
+  fs.rmSync(LOCK, { force: true });
+  fs.rmSync(DEAD_HOLDERS_GIT_LOCK, { force: true });
+  if (!take(command)) throw taken(lockHolder());
 }
 
 export async function withLock<T>(command: 'bake' | 'apply', work: () => Promise<T>): Promise<T> {
