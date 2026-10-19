@@ -57,7 +57,6 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 ENV COREPACK_HOME=/data/corepack \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     NX_DAEMON=false \
-    NX_NO_CLOUD=true \
     WRANGLER_SEND_METRICS=false \
     # `pnpm deploy --prod` marks the workspace prod-only, so pnpm would reinstall it without devDependencies
     # before every script. The box runs `pnpm install` itself when the lockfile changes.

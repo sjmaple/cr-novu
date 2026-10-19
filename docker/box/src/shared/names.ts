@@ -32,6 +32,7 @@ export const SECRETS = [
   'LAUNCH_DARKLY_SDK_KEY',
   'NOVU_MANAGED_CLAUDE_API_KEY',
   'BULL_MQ_PRO_NPM_TOKEN',
+  'NX_CLOUD_ACCESS_TOKEN',
 ] as const;
 export type SecretName = (typeof SECRETS)[number];
 

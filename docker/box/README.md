@@ -83,6 +83,7 @@ host-only ones. A box runs PR code, and that code can read its environment, so:
 | `STRIPE_API_KEY` | yes | Stripe sandbox `Novu Box` (`acct_1UODPmFKxZbFmwjX`), `sk_test_...` | Bake (puts the org on Team), `stripe listen`, API |
 | `NOVU_MANAGED_CLAUDE_API_KEY` (optional) | yes | Anthropic, a workspace with a monthly spend limit, never Novu's production key | Start (runs thalamus and seeds the `box-managed` agent), API, bridge app (real models for its agents) |
 | `BULL_MQ_PRO_NPM_TOKEN` (optional) | yes | Taskforce.sh registry | Bake; without it the box runs open-source BullMQ |
+| `NX_CLOUD_ACCESS_TOKEN` (optional) | yes | Nx Cloud, the workspace in `nx.json`, a **read-only** CI token (never a read-write one: PR code could fill the shared cache) | The box's nx builds read CI's remote cache; without it they use only the local cache |
 | `GITHUB_READ_TOKEN` | no | GitHub, fine-grained, `novuhq`, repositories `novu` and `packages-enterprise`, Contents and Checks read | Every bake's and apply's git fetches and CI lookup (never the installs, builds or apps), instead of the caller's token, so no push-capable token reaches a box. Without it, people's calls use their own `gh` token, and CI can't apply |
 | `CLOUDFLARE_API_TOKEN` | no | Cloudflare, Account, Workers Scripts, Edit, on the Novu account only | The `/__box/boxes` routes, which create and delete boxes' Workers |
 | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | no | Novu Bot (see "Slack") | The Slack router; without them, boxes get no Slack |

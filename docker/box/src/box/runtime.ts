@@ -17,7 +17,11 @@ function loadEnv(): Record<string, string> {
     (entry): entry is [string, string] => entry[0] !== 'GITHUB_TOKEN' && entry[1] !== undefined
   );
 
-  return { ...defaults, ...Object.fromEntries(inherited) };
+  const env: Record<string, string> = { ...defaults, ...Object.fromEntries(inherited) };
+  // The token is read-only: nx reads CI's remote cache, and what it builds never reaches it.
+  if (!env.NX_CLOUD_ACCESS_TOKEN) env.NX_NO_CLOUD = 'true';
+
+  return env;
 }
 
 const inBox = (options: proc.RunOptions = {}): proc.RunOptions => ({ cwd: REPO, env: vars, ...options });

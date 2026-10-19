@@ -16,7 +16,11 @@ const IMAGE_CONFIG = join(HERE, '.wrangler.box-image.json');
 const HostConfig = z.looseObject({ containers: z.array(z.looseObject({})) });
 const SecretList = z.array(z.object({ name: z.string() }));
 const HOST_ONLY_SECRETS = ['GITHUB_READ_TOKEN', 'CLOUDFLARE_API_TOKEN', 'SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET'];
-const OPTIONAL_SECRETS = new Set<string>(['NOVU_MANAGED_CLAUDE_API_KEY', 'BULL_MQ_PRO_NPM_TOKEN']);
+const OPTIONAL_SECRETS = new Set<string>([
+  'NOVU_MANAGED_CLAUDE_API_KEY',
+  'BULL_MQ_PRO_NPM_TOKEN',
+  'NX_CLOUD_ACCESS_TOKEN',
+]);
 
 function missingSecrets(names: ReadonlyArray<string>): { required: Array<string>; optional: Array<string> } {
   const missing = [...SECRETS, ...HOST_ONLY_SECRETS].filter((name) => !names.includes(name));

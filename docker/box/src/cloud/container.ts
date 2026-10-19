@@ -28,7 +28,6 @@ export const IMAGE_ENV = {
   COREPACK_HOME: '/data/corepack',
   COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
   NX_DAEMON: 'false',
-  NX_NO_CLOUD: 'true',
   WRANGLER_SEND_METRICS: 'false',
   pnpm_config_verify_deps_before_run: 'false',
   BOX_HOME: '/opt/box',
