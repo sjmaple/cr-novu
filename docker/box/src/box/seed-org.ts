@@ -2,7 +2,7 @@
 import { log } from '../node/main.ts';
 import { ApiOrganization, StripeCustomers, WithId } from '../shared/contracts.ts';
 import { api, stripe } from './api.ts';
-import { clerk, findSeedUser, SEED, seedPassword, seedUserToken } from './clerk.ts';
+import { clerk, findSeedUser, SEED, seedPassword, userToken } from './clerk.ts';
 import { checkoutMongoose, redis } from './migrate.ts';
 import { API_HEALTH, REDIS_PORTS, WORKER_HEALTH } from './paths.ts';
 import { step, vars, waitForHttp } from './runtime.ts';
@@ -38,7 +38,7 @@ export async function seedClerk(): Promise<string> {
       json: { public_metadata: { externalOrgId } },
     });
   const me = async () => {
-    const token = await seedUserToken(user.id, org.id);
+    const token = await userToken(user.id, org.id);
     const { data } = await api('/v1/organizations/me', ApiOrganization, { headers: bearer(token) });
 
     return { token, org: data };

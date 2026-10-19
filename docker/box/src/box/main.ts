@@ -7,6 +7,7 @@ import { doctor, quiesce, resume, state, stopApply } from './doctor.ts';
 import { bake, start } from './lifecycle.ts';
 import { logs } from './logs.ts';
 import { migrate } from './migrate.ts';
+import { teamTestUser } from './seed.ts';
 import { pc } from './supervisor.ts';
 
 const token = process.env.GITHUB_TOKEN || undefined;
@@ -73,6 +74,15 @@ const commands: Record<string, Command> = {
     run: () => done(stopApply()),
   },
   status: { usage: '', help: 'list processes', run: () => done(pc(['process', 'list'])) },
+  team: {
+    usage: '<email>',
+    help: "put a test user's own org (agent+<box>.<id>@novu.co, after its onboarding) on the Team plan",
+    run: ({ args }) => {
+      if (!args[0]) throw new Error('usage: box team <email>');
+
+      return done(teamTestUser(args[0]));
+    },
+  },
   migrate: {
     usage: '',
     help: 'replica set, Redis Cluster, Mongo indexes, ClickHouse migrations, S3 bucket\n(run by process-compose before the apps)',

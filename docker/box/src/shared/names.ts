@@ -14,6 +14,17 @@ export function boxOfOrigin(origin: string): string {
   return label.replace(/^novu-box-/, '');
 }
 
+// Box names have no dots, so the box is everything between `+` and the last dot.
+const TEST_USER = /^agent\+([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\.([a-z0-9]{6})@novu\.co$/;
+
+export function testUserEmail(box: string, id: string): string {
+  return `agent+${box}.${id}@novu.co`;
+}
+
+export function boxOfTestUser(email: string): string | null {
+  return email.match(TEST_USER)?.[1] ?? null;
+}
+
 export const SECRETS = [
   'CLERK_SECRET_KEY',
   'BOX_SEED_PASSWORD',

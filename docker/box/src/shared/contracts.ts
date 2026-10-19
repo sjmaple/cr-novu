@@ -185,6 +185,17 @@ export const ClerkMemberships = z.object({
   data: z.array(z.object({ organization: WithId.extend({ name: z.string() }) })),
 });
 export const ClerkToken = z.object({ jwt: z.string() });
+export const ClerkUser = WithId.extend({
+  created_at: z.number(),
+  email_addresses: z.array(z.object({ email_address: z.string() })),
+});
+export type ClerkUser = z.infer<typeof ClerkUser>;
+export const ClerkUserList = z.array(ClerkUser);
+
+const TestUser = z.object({ email: z.string(), box: z.string(), createdAt: z.string(), live: z.boolean() });
+export const TestUsers = z.object({ users: z.array(TestUser), prune: z.array(z.string()) });
+export const CreatedTestUser = z.object({ email: z.string(), password: z.string(), pruned: z.array(z.string()) });
+export const DeletedBox = z.object({ users: z.array(z.string()).default([]), usersError: z.string().optional() });
 
 const data = <T extends z.ZodType>(schema: T) => z.object({ data: schema });
 const ApiId = z.object({ _id: z.string() });

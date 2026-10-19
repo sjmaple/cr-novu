@@ -13,7 +13,7 @@ import {
   WithId,
 } from '../shared/contracts.ts';
 import { api, stripe } from './api.ts';
-import { SEED } from './clerk.ts';
+import { SEED, testUserOrg, userToken } from './clerk.ts';
 import { MAIL_HOST, SINK_URL } from './paths.ts';
 
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
@@ -92,12 +92,20 @@ export async function seedChannels(token: string): Promise<void> {
   }
 }
 
-export async function seedTeamTier(token: string): Promise<void> {
+export async function teamTestUser(email: string): Promise<void> {
+  const { user, org } = await testUserOrg(email);
+  const token = await userToken(user.id, org.id);
+  const novuOrg = (await api('/v1/organizations/me', ApiOrganization, { headers: bearer(token) })).data;
+  if (novuOrg._id === SEED.novuOrgId) throw new Error(`${email}'s org is the seed org; leave it as it is`);
+  await seedTeamTier(token, email);
+}
+
+export async function seedTeamTier(token: string, email = SEED.email): Promise<void> {
   const auth = { headers: bearer(token) };
   const org = (await api('/v1/organizations/me', ApiOrganization, auth)).data;
   await api('/v1/billing/subscription', ApiSubscription, auth);
   const { data: customers } = await stripe(
-    `/customers?email=${encodeURIComponent(SEED.email)}&limit=100&expand[]=data.subscriptions`,
+    `/customers?email=${encodeURIComponent(email)}&limit=100&expand[]=data.subscriptions`,
     StripeCustomers
   );
   const customer = customers.find((candidate) => candidate.metadata.organizationId === org._id);
@@ -139,5 +147,5 @@ export async function seedTeamTier(token: string): Promise<void> {
       },
     }
   );
-  log(`${SEED.orgName} is on Team (customer ${customer.id})`);
+  log(`${org.name} (${org._id}) is on Team (customer ${customer.id})`);
 }

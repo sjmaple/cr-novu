@@ -3,6 +3,7 @@
 import type * as z from 'zod';
 import { fetchJson, type JsonInit } from '../node/http.ts';
 import { ClerkMemberships, ClerkToken, ClerkUsers, WithId } from '../shared/contracts.ts';
+import { boxOfTestUser } from '../shared/names.ts';
 
 export const SEED = {
   email: 'agent@novu.co',
@@ -38,7 +39,19 @@ export async function findSeedUser(): Promise<{ user?: WithId | undefined; org?:
   return { user, org: data.find((membership) => membership.organization.name === SEED.orgName)?.organization };
 }
 
-export async function seedUserToken(userId: string, orgId: string): Promise<string> {
+export async function testUserOrg(email: string): Promise<{ user: WithId; org: WithId }> {
+  if (!boxOfTestUser(email)) throw new Error(`not a test user: ${email} (agent+<box>.<id>@novu.co)`);
+  const [user] = await clerk(`/users?email_address=${encodeURIComponent(email)}`, ClerkUsers);
+  if (!user) throw new Error(`no Clerk user ${email}`);
+  const { data } = await clerk(`/users/${user.id}/organization_memberships`, ClerkMemberships);
+  const [membership, ...more] = data;
+  if (!membership) throw new Error(`${email} has no org yet: sign in with it and finish the onboarding first`);
+  if (more.length) throw new Error(`${email} is in ${data.length} orgs; expected only its own`);
+
+  return { user, org: membership.organization };
+}
+
+export async function userToken(userId: string, orgId: string): Promise<string> {
   const session = await clerk('/sessions', WithId, {
     method: 'POST',
     json: { user_id: userId, active_organization_id: orgId },

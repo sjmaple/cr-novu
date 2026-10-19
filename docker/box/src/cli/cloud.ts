@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import * as z from 'zod';
 import { log } from '../node/main.ts';
 import { poll } from '../node/poll.ts';
-import { BoxStatus, DoctorReport, decode, fromJson, needsBake, StateAnswer } from '../shared/contracts.ts';
+import { BoxStatus, DeletedBox, DoctorReport, decode, fromJson, needsBake, StateAnswer } from '../shared/contracts.ts';
 import { BOX_CLI, boxWorker, DOMAIN, HOST } from '../shared/names.ts';
 import {
   boxFetch,
@@ -265,8 +265,10 @@ export function cloudTarget(options: CloudOptions): CloudTarget {
       await call(`/adopt?snapshot=${encodeURIComponent(snapshot)}`, { method: 'POST' });
     },
     async delete() {
-      log(`${worker}: stopping and forgetting the box, then deleting its Worker`);
-      await hostBoxes(`boxes/${box}`, z.unknown(), { method: 'DELETE', token });
+      log(`${worker}: stopping and forgetting the box, then deleting its Worker and test users`);
+      const { users, usersError } = await hostBoxes(`boxes/${box}`, DeletedBox, { method: 'DELETE', token });
+      if (users.length) log(`deleted ${box}'s test users: ${users.join(', ')}`);
+      if (usersError) log(`WARN: ${box}'s test users weren't deleted: ${usersError}`);
 
       return 0;
     },
