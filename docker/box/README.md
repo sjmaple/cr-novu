@@ -319,7 +319,7 @@ sees them.
   Slack integration (`box-slack-<agent>`) and a workspace connection through the box's API, with a bot token
   and signing secret the router made up for that box. The router posts "<box> ready · Talk to: …" in
   `#novu-box`; `delete` removes it and the box's tokens.
-- In Slack, pick a box and agent with a Talk to button (or `/novu-box <box> [agent]`, or the bot's Home tab),
+- In Slack, pick a box and agent with a Talk to button (or `/novu-box <box> [agent]`),
   then @mention Novu Bot in `#novu-box` or DM it. A thread keeps its box and agent; the main DM follows your
   pick. Replies show as "<box> · <agent>". The agents answer only people linked to a subscriber, so the first
   time someone writes to a box's agent, the router has the host link them as subscriber `slack-<user id>`.

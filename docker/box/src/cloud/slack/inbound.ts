@@ -11,7 +11,6 @@ import {
   registered,
   replyTo,
   short,
-  slack,
   talkBlocks,
 } from './core.ts';
 import { claim, event, ownerOf } from './events.ts';
@@ -35,10 +34,7 @@ export async function inbound(core: RouterCore, request: Request): Promise<Respo
   if (request.headers.get('content-type')?.includes('json')) {
     const body = decode(SlackEventBody, raw, NOT_SLACK);
     if (body.type === 'url_verification') return Response.json({ challenge: body.challenge });
-    const payload = body.event;
-    if (body.type === 'event_callback' && payload?.type === 'app_home_opened') {
-      if (payload.tab === 'home' && payload.user) core.later('home', publishHome(core, payload.user));
-    } else if (body.type === 'event_callback') await event(core, body);
+    if (body.type === 'event_callback') await event(core, body);
 
     return ack();
   }
@@ -93,8 +89,7 @@ async function routerAction(core: RouterCore, payload: Interaction, action: Acti
   const selection = await select(core, user, box, agent);
   const text = selection ? await talkingTo(core, selection) : `${box} isn't running any more.`;
   const responseUrl = payload.response_url;
-  if (payload.container?.type === 'view') core.later('home', publishHome(core, user));
-  else if (responseUrl)
+  if (responseUrl)
     core.later(
       'response_url',
       fetch(responseUrl, {
@@ -154,27 +149,6 @@ async function command(core: RouterCore, form: URLSearchParams): Promise<object>
   }
 
   return reply(await talkingTo(core, selection));
-}
-
-async function publishHome(core: RouterCore, user: string): Promise<void> {
-  const selection = await core.storage.get<Owner>(`sel:${user}`);
-  const boxes = await registered(core);
-  const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: 'Novu Box' } },
-    {
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: selection ? await talkingTo(core, selection) : 'Pick a box and an agent to talk to.',
-        },
-      ],
-    },
-    ...(boxes.length
-      ? boxes.flatMap((box) => [{ type: 'divider' }, ...talkBlocks(box)])
-      : [{ type: 'section', text: { type: 'mrkdwn', text: NO_BOX } }]),
-  ];
-  await slack(core, 'views.publish', { user_id: user, view: { type: 'home', blocks } });
 }
 
 // Slack's request signature: v0=HMAC-SHA256(signing secret, "v0:<timestamp>:<body>"), within 5 minutes.

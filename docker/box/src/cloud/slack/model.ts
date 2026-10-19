@@ -74,7 +74,6 @@ const SlackMessage = z.looseObject({
 export const SlackEventPayload = SlackMessage.extend({
   type: z.string().optional(),
   subtype: z.string().optional(),
-  tab: z.string().optional(),
   channel: z.string().optional(),
   deleted_ts: z.string().optional(),
   item: z.looseObject({ channel: z.string().optional(), ts: z.string().optional() }).optional(),
