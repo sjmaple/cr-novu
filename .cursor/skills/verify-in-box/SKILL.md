@@ -22,6 +22,8 @@ node docker/box/src/cli/main.ts sync
 Done when `sync` exits 0 and ends with `applied sync <branch> at <sha>`. Keep its `plan:` line: it says what the box
 rebuilt and restarted, which is part of the evidence.
 
+- One box per branch, shared by everyone on that branch. When agents work in parallel, give each its own
+  `--box <name>` on every command, and never drive a box you didn't start.
 - `up` is your branch's box: a new one starts from `base` in about 2 minutes and already gets your checkout (the
   `sync` after it then has nothing to do); an existing one wakes in under a minute. Without a `base` snapshot it
   bakes `next` first (13 to 16 minutes).

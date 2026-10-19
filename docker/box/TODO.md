@@ -1,9 +1,20 @@
-# Where the Novu Box differs from staging
+# Novu Box: differences, open questions and to-dos
 
-The box aims to match Novu Cloud (staging/production). Everything below is a known difference, why it exists,
-what a PR tester would miss, and what closing it would take. Keep this list current when the box changes.
+Everything the box doesn't do yet, or does differently from Novu Cloud, in one place:
 
-## Infrastructure
+1. **Differences from staging:** what a PR tester would miss in a box, and what closing each gap would take.
+2. **Open questions:** facts we need from Cloudflare.
+3. **Planned work:** what's still to build.
+4. **Bugs in Novu** found while building the box, still to report.
+
+Keep it current when the box changes.
+
+## 1. Differences from staging
+
+The box aims to match Novu Cloud (staging/production). Each row is a known difference, why it exists, what a PR tester
+would miss, and what closing it would take.
+
+### Infrastructure
 
 | Area | Staging / production | Box | What a PR tester misses | To close it |
 |---|---|---|---|---|
@@ -20,7 +31,7 @@ what a PR tester would miss, and what closing it would take. Keep this list curr
 | `NODE_ENV` | `dev` on staging, `production` in production | `production` (matches production) | Staging-only `dev` behaviour (Swagger explorer, http profile URLs, popular-template IDs) | - |
 | `NOVU_REGION` | `eu-west-2` (staging) | Unset | LaunchDarkly region targeting, EU/US Human dashboard URL, Plain cards key | One line in `box.env` |
 
-## Services that are off
+### Services that are off
 
 | Service | Effect in the box | To turn on |
 |---|---|---|
@@ -30,7 +41,7 @@ what a PR tester would miss, and what closing it would take. Keep this list curr
 | Step resolver (Cloudflare dispatch) | Custom-code steps that need it don't run | `STEP_RESOLVER_*`; off by decision |
 | Thalamus | Off unless the box starts with `NOVU_MANAGED_CLAUDE_API_KEY`; then it runs under `wrangler dev` | - |
 
-## Channels
+### Channels
 
 | Channel | Box | Exercised | Not exercised |
 |---|---|---|---|
@@ -39,7 +50,7 @@ what a PR tester would miss, and what closing it would take. Keep this list curr
 | Novu demo providers | Absent (`NOVU_EMAIL_INTEGRATION_API_KEY`, `NOVU_SMS_INTEGRATION_*`) | - | The "Novu" email/SMS demo integrations |
 | Inbox | Real (socket worker, `VITE_WEBSOCKET_TYPE=cloud`) | Realtime, feed, preferences | - |
 
-## Code-first workflows and agents (bridge app)
+### Code-first workflows and agents (bridge app)
 
 The `bridge` process runs `playground/nextjs`, which serves workflows and three self-hosted agents with the
 checkout's `@novu/framework`, signed
@@ -57,7 +68,7 @@ with the Development secret key, through the same SSRF guard as a customer's bri
 | Agent channels | Web chat, and on cloud boxes Slack through one shared app, Novu Bot, in `#novu-box` and DMs (README, "Slack: Novu Bot"). Each agent gets a real Slack integration and connection in the box's API, but with a bot token and signing secret the Slack router made up; the router swaps them for the real ones, passes only the Slack methods the agents use, and sets each reply's name to "<box> · <agent>" (a customer's bot posts under its own name). Boxes aren't kept apart within `#novu-box` and the bot's DMs: a box can read the others' threads. Files the agent uploads show as plain Novu Bot (Slack's upload API takes no name). People talk to the agents as `slack-<user id>` subscribers the host creates on first contact, as a customer's linking would. Teams, WhatsApp and the rest need partner apps |
 | Web chat limits | Shows typing, edits, deletes and custom events (`ctx.emit`). Rejects file replies (`attachment_failed`) and agent reactions (including the resolve reaction, logged as "Failed to add resolve reaction"), and drops `quoteReply`. Users can't react, edit, delete or attach. On Slack, checked by hand once, the file reply, agent reaction, quote, card click, HITL approve, agent edit and delete, and the user's reaction and edit work; a user's delete reaches the agent's box but `custom-code-agent` didn't answer it; an agent downloading an image or PDF the user sent (through the router's `/files`) and HITL `to` (`multi-approve`) are untested. From real Slack: `/novu-box`, picking an agent, a mention that woke a sleeping box (47 s), a card, a tool approval, DMs, the user's reaction, and an image reaching `custom-code-agent` (which ignores attachments).|
 
-## Auth, billing and flags
+### Auth, billing and flags
 
 | Area | Box | Difference from staging |
 |---|---|---|
@@ -66,7 +77,7 @@ with the Development secret key, through the same SSRF guard as a customer's bri
 | LaunchDarkly | Staging's project and environment, read-only SDK key | Box orgs get staging's default rules like any new customer (rate limiting on, Agents tab visible) |
 | Managed-Claude quota | `MAX_NOVU_MANAGED_CLAUDE_CONVERSATIONS=200` | The default is 10 conversations per org per month, which repeated test runs use up. To test the cap, lower it in `image/config/box.env` (every box, after `box deploy`); the 100,000-token cap per conversation is unchanged |
 
-## Novu-internal and third-party features
+### Novu-internal and third-party features
 
 | Feature | Effect in the box | Why |
 |---|---|---|
@@ -81,7 +92,7 @@ with the Development secret key, through the same SSRF guard as a customer's bri
 | Custom domains (`DOMAIN_CONNECT_PRIVATE_KEY`) | Domain Connect fails | No key; could generate a box-only one |
 | Monitoring and marketing (New Relic, Sentry, Segment, Mixpanel, HubSpot, Intercom, Plain) | Off; `/v1/telemetry/measure` returns 404 | Box traffic must not reach real dashboards |
 
-## Hosting on Cloudflare
+### Hosting on Cloudflare
 
 What differs, or is still a workaround, because the box runs on Cloudflare (`src/cloud/host.ts`).
 
@@ -94,7 +105,7 @@ What differs, or is still a workaround, because the box runs on Cloudflare (`src
 | Uptime | Always on | Sleeps after 1 h without requests and wakes in 35 to 50 s; a Cloudflare host restart loses changes since the last save | The first request after a sleep waits | - |
 | Snapshot storage | - | Snapshots are delta chains in the account's registry, and nothing deletes them (below). Several storage rules are undocumented (below) | - | Ask Cloudflare (asked) |
 
-### Deleting snapshots
+#### Deleting snapshots
 
 Nothing deletes snapshots automatically, and deletes haven't observably freed storage (below). To delete some by hand
 if it's ever needed: `npx wrangler containers images list` and `npx wrangler containers images delete`, or the registry
@@ -102,9 +113,9 @@ API (the tags, then the manifest by digest, then `PUT /v2/gc/layers`), keeping t
 every live box's snapshot. The removed sweep that did this is in git history at commit `762d217965`
 (`src/cloud/sweep.ts`), with its research in `.scratch/base-refresh/`.
 
-### Snapshot storage: open questions
+## 2. Open questions
 
-Asked Cloudflare on 2026-10-18; until they answer:
+About snapshot storage on Cloudflare. Asked Cloudflare on 2026-10-18; until they answer:
 
 - **Do snapshots count toward the 50 GB account image limit?** Undocumented. Before the first cleanup the registry
   listed about 54 GB (about 48.7 GB of snapshots, plus images), and saves and image uploads kept working, so either
@@ -126,20 +137,56 @@ Asked Cloudflare on 2026-10-18; until they answer:
   instead of nightly; move PR boxes older than N days onto the current `base` (they lose their data); allow fewer PR
   boxes; or give PR boxes no snapshots of their own (a wake becomes a fresh `base` plus a re-apply, 1 to 6 min).
 
-### Target setup once boxes have a domain (NV-9059)
+## 3. Planned work
 
-The `workers.dev` setup is a workaround for having no domain. With one, the hosting becomes:
+Not done yet, roughly in order of value. Each item says what it would take.
 
-1. **One Worker for everything.** The host Worker (`novu-box-hub`) answers `<box>.<domain>` itself and routes by
-   hostname to the box's Durable Object, so the thin per-box Workers (`novu-box-<box>`) and their deploys go away.
-2. **A host per part,** one wildcard level deep for the free certificate: `<box>.<domain>` (dashboard),
-   `<box>-api.<domain>`, `<box>-ws.<domain>`, `<box>-s3.<domain>`, `<box>-mail.<domain>`. The dashboard then calls the
-   API cross-origin, as in production, so CORS and cookies are tested again, and the path routing in the Caddyfile goes.
-3. **One base snapshot** (`Box("base")`, refreshed on every push to `next` and baked nightly) that every new box starts from, within the one class.
-4. **Not** `novu.co` (production cookies), `novu.sh` (customer `npx novu dev` tunnels) or `novu-staging.co` (shares
-   a parent domain with staging, possible Clerk cookie clash).
+- **Merge into `next`.** GitHub runs the PR workflow (the `box` label) and the refresh on every push to `next` only
+  from the default branch, so until then boxes come only from the CLI. Then watch the first real runs: a labelled PR,
+  a push to `next` refreshing `base`, the nightly rebake.
+- **Alert when `base` can't be refreshed or rebaked.** Today that's only a red GitHub Actions run. Post it to
+  `#novu-box` (the Slack router already posts there).
+- **A feature map for `verify-in-box`** (pstack's `/create-verification-skill`): `features/README.md` plus one file
+  per user-facing feature (what it is, how a user reaches it, exact drive steps, what end state proves it, gotchas):
+  the workflow editor, triggering and each channel, the Inbox, subscribers and topics, digest and delay, preferences,
+  integrations, the activity feed, environments and promotion, layouts, translations, each agent runtime, web chat,
+  Slack, billing. Agents then stop rediscovering the app on every task.
+- **Keep the skill honest daily** (pstack's `/maintain-verification-skill`): read every mapped feature from source,
+  drive every feature live on a box, one PR of corrections. Needs the feature map first.
+- **Evidence conventions in the skill:** proof saved as files in one named folder that survives cleanup, the user
+  action and the resulting state (not only the final screen), the real side effect (the sent message, the stored
+  row), optionally a short recording.
+- **An outside judge:** saved TesterArmy tests, or a swarm of agents driving the feature map through the skill.
+  Decide which before building either; the smoke and Slack checks in `.scratch/box-checks/` are stopgaps.
+- **A regression check of the box itself:** nothing re-tests the box when `docker/box` changes (CI only
+  type-checks). At least a smoke run against `base` after the nightly rebake.
+- **`box login`:** an authenticated dashboard session in one command (the Clerk sign-in), so a browser tool can drive
+  the dashboard without scripting the sign-in each time.
+- **Slow first restore:** a freshly saved snapshot's first restore has taken about 4 minutes (later ones about 40 s),
+  so the first PR box after a refresh or rebake may wait. Measure it after a refresh; if it holds, restore each new
+  `base` snapshot once in a throwaway box right after saving it.
+- **A GitHub App instead of the personal read token** (`GITHUB_READ_TOKEN`, expires 2027-10-17) before boxes go to
+  every PR.
+- **Boxes on every PR** instead of on the `box` label, after a cost check.
+- **Reuse CI's builds through Nx Cloud:** needs a read-only Nx Cloud token from the workspace's owner; then measure
+  how many box build tasks CI already cached (the box's build differs from CI's, so hits aren't certain).
+- **`sync` with uncommitted enterprise changes:** today an enterprise change reaches a box only once it's committed
+  and pushed in `packages-enterprise` (`sync` sends `.source`'s commit).
+- **Cursor cloud agents on boxes:** they need a way to authenticate (a push-capable GitHub token or OIDC).
+- **Biome in the box's CI job:** Biome hangs on some machines locally, so box commits have skipped the lint hook.
+- **A domain (NV-9059).** The `workers.dev` setup is a workaround for having no domain. With one, the hosting
+  becomes:
 
-## Bugs found while building the box
+  1. **One Worker for everything.** The host Worker (`novu-box-hub`) answers `<box>.<domain>` itself and routes by
+     hostname to the box's Durable Object, so the thin per-box Workers (`novu-box-<box>`) and their deploys go away.
+  2. **A host per part,** one wildcard level deep for the free certificate: `<box>.<domain>` (dashboard),
+     `<box>-api.<domain>`, `<box>-ws.<domain>`, `<box>-s3.<domain>`, `<box>-mail.<domain>`. The dashboard then calls the
+     API cross-origin, as in production, so CORS and cookies are tested again, and the path routing in the Caddyfile goes.
+  3. **One base snapshot** (`Box("base")`, refreshed on every push to `next` and baked nightly) that every new box starts from, within the one class.
+  4. **Not** `novu.co` (production cookies), `novu.sh` (customer `npx novu dev` tunnels) or `novu-staging.co` (shares
+     a parent domain with staging, possible Clerk cookie clash).
+
+## 4. Bugs found while building the box
 
 - `subscribers` declares two indexes named `unique_subscriber_per_environment` with different key orders; `syncIndexes`
   skips one with a warning. Not fixed in the box; to report.
