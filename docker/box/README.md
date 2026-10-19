@@ -78,7 +78,7 @@ host-only ones. A box runs PR code, and that code can read its environment, so:
 | Secret | Boxes get it | Service | Used by |
 |---|---|---|---|
 | `LAUNCH_DARKLY_SDK_KEY` | yes | LaunchDarkly project `default`, environment `dev` (staging's) | API, worker |
-| `CLERK_SECRET_KEY` | yes | Clerk app `novu-box` (`app_3KN3iEbdMZ8XqqRpi3hIC6wzzLE`), development instance | Bake (seeds the user and org), API |
+| `CLERK_SECRET_KEY` | yes | Clerk app `novu-box` (`app_3KN3iEbdMZ8XqqRpi3hIC6wzzLE`), development instance | Bake (seeds the user and org), API, the host's test users (`box user`) |
 | `BOX_SEED_PASSWORD` | yes | The seed user's dashboard password (`openssl rand -base64 24`), shared through the password manager | Bake (sets it on the Clerk user) |
 | `STRIPE_API_KEY` | yes | Stripe sandbox `Novu Box` (`acct_1UODPmFKxZbFmwjX`), `sk_test_...` | Bake (puts the org on Team), `stripe listen`, API |
 | `NOVU_MANAGED_CLAUDE_API_KEY` (optional) | yes | Anthropic, a workspace with a monthly spend limit, never Novu's production key | Start (runs thalamus and seeds the `box-managed` agent), API, bridge app (real models for its agents) |
@@ -107,6 +107,27 @@ only while the Clerk instance has these two settings:
 
 Check them with `curl -s https://electric-sponge-6737.clerk.accounts.dev/v1/environment`: `email_address` must not
 list `email_code` in `first_factors`, and `auth_config.test_mode` must be `false`.
+
+### Test users: `box user`
+
+For a fresh org, a real sign-up and onboarding, or several users, without the seed user's password,
+`box user create` (by default for the current branch's box, or `--box <name>`) has the host create a Clerk user
+`agent+<box>.<id>@novu.co` with a verified email and a random password, and prints both (`--json` for a tool). The
+host does it through Clerk's Backend API, so the box needn't be awake. Novu creates the user, its org and both
+environments on the first signed-in request, as for a real sign-up; the dashboard's onboarding creates the org.
+
+- A user is for its box only: once it signed in, its Clerk metadata holds that box's Novu IDs, and Novu trusts
+  them, so in another box it would point at an org that doesn't exist there.
+- A new org has only the in-app channel. `box user channels <email>` adds the box's Mailpit, SMS, push and chat
+  integrations to the user's own org, as the bake does for the seed org, so `box mail` shows what it sends.
+- `box user team <email>` puts the user's own org on the Team plan once it finished onboarding, as the bake does
+  for the seed org. Both refuse the seed org.
+- `box user delete <email>` deletes that Clerk user, never an org, and only an `agent+<box>.<id>@novu.co` one.
+  `box delete` (and the PR workflow's) deletes the box's users too; when that fails, the box is deleted anyway and
+  `delete` warns.
+- Clerk's development instance holds 100 users, for every box. With 50 or more test users, `create` first deletes
+  those whose box is gone, then the oldest. `box user list` lists them, and with `--limit <n>` shows which a create
+  would delete at `n`.
 
 ## Use it
 
@@ -159,8 +180,9 @@ the image with. No secrets (see "Secrets").
 | `node docker/box/src/cli/main.ts mail [search \| id]` | What the box sent, from its Mailpit: the newest messages (email, and SMS, push and chat from the sink), a search (`to:a@b.c`, `subject:Welcome`, `tag:sms`), or one message with its headers, links, Mailpit's HTML check (which email clients break on what) and a `view` URL to screenshot; `--html`, `--check-links`, `--limit <n>` |
 | `node docker/box/src/cli/main.ts logs [process]` | The last 200 lines (`--tail <n>`) of one process, or of all of them merged, as `name \| LEVEL context: message`; `--errors` keeps warnings and errors, `--follow` streams new lines. An unknown name lists the processes |
 | `node docker/box/src/cli/main.ts exec -- <command>` | Runs a command in the box's checkout (`/data/novu`) |
+| `node docker/box/src/cli/main.ts user create\|list\|channels\|team\|delete` | The box's own dashboard test users (see "Test users") |
 | `node docker/box/src/cli/main.ts down` | Saves the box to its snapshot and stops it; the next request, or `up`, wakes it with its data |
-| `node docker/box/src/cli/main.ts delete` | Stops the box and deletes it with its snapshot and Worker (see below) |
+| `node docker/box/src/cli/main.ts delete` | Stops the box and deletes it with its snapshot, Worker and test users (see below) |
 | `node docker/box/src/cli/main.ts deploy` | Deploys the host, its image and the Slack router (see below) |
 
 `sync` puts the checkout on the box as `apply` puts a PR: it commits HEAD plus every change, untracked files
@@ -298,7 +320,10 @@ push-capable GitHub tokens people use. Boxes' Workers are created and deleted on
 |---|---|
 | `GET /__box/boxes` | Lists the boxes (every `novu-box-<name>` Worker but the host and the router) |
 | `PUT /__box/boxes/<box>` | Uploads the box's Worker (`thin.ts`, bundled into one module by `box deploy`, bound to the host's Box class) and puts it on workers.dev |
-| `DELETE /__box/boxes/<box>` | Stops the box and forgets it, then deletes its Worker; keeps the Worker (502) when the box didn't stop |
+| `DELETE /__box/boxes/<box>` | Stops the box and forgets it, then deletes its Worker and its test users; keeps the Worker (502) when the box didn't stop |
+| `GET /__box/users?limit=<n>` | Lists the test users, and which a create would delete at `n` (default 50) |
+| `POST /__box/users/<box>` | Creates a test user for a box that exists, after deleting users to stay under 50 |
+| `DELETE /__box/users/<email>` | Deletes one test user |
 
 The Slack router's Worker, `novu-box-slack` (`wrangler.slack.jsonc`), deploys with the host.
 
