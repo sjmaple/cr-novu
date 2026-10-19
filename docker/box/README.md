@@ -1,8 +1,7 @@
 # Novu Box
 
 One container that runs the Novu Cloud stack (enterprise API, worker, socket worker, dashboard) with all of its
-data stores, so a PR can be tried end to end before it merges. Where it differs from staging, the open questions and
-what's still to build are in [TODO.md](./TODO.md).
+data stores, so a PR can be tried end to end before it merges.
 
 Boxes run on Cloudflare Containers. The image holds tools only. The Novu checkout, `node_modules`, builds and
 database files live under `/data`, which a box keeps in its snapshot while it sleeps, so one image serves every box:
@@ -243,7 +242,7 @@ Each save is a btrfs delta on the snapshot the box woke from, stored in the acco
 `rootfs-snapshot-*` and `rootfs-set-*`, on the repository of the box image; `npx wrangler containers images list`),
 and its metadata lists its whole chain back to the first full snapshot (about 3.7 GB). A box started from `base`
 continues `base`'s chain. A refresh adds a delta to `base`'s chain (0.4 GB for 56 changed files); the nightly
-rebake starts a new chain. Nothing deletes old snapshots (`TODO.md`, "Open questions").
+rebake starts a new chain. Nothing deletes old snapshots.
 
 Limits for now: requests the box makes to its own public address go out through the internet; a host redeploy with a new
 image is untested with boxes running. A `sync` whose rebuild runs longer than 5 minutes (a playground change, with
@@ -351,7 +350,7 @@ card-click handlers:
   `approve`, `multi-approve`, `custom-approve`, `custom-chrome-approve`, `ask`, `choose`, `tell`,
   `weather <city>`); anything else lists them. It works the same with or without the key. It's the only agent
   with HITL (`approve`, `ask`, `choose`, `tell`), because only plain `agent()` handles the answer. `file`,
-  `quote`, `react` and `multi-approve` need Slack (see `TODO.md`, "Web chat limits").
+  `quote`, `react` and `multi-approve` need Slack: web chat doesn't support them.
 - `ai-sdk-agent` and `langchain-agent` get every other feature as a tool and, with
   `NOVU_MANAGED_CLAUDE_API_KEY`, run on Claude Haiku, which picks the tools from plain sentences and also reads
   attached images and PDFs (this spends from the key's workspace, not Novu's managed-Claude quota). Without the
@@ -360,7 +359,7 @@ card-click handlers:
 With `NOVU_MANAGED_CLAUDE_API_KEY`, `start` also runs the thalamus observer and seeds `box-managed`, a managed
 agent on the Novu-managed Claude integration (Claude Haiku, only the `bash` tool, which asks before it runs).
 It calls Anthropic for real; Novu's own caps still apply (100,000 tokens per conversation, and 200 managed-Claude
-conversations per org per month instead of the default 10, see TODO.md).
+conversations per org per month instead of the default 10).
 
 Other commands of the box, run with `node docker/box/src/cli/main.ts exec -- node /opt/box/src/box/main.ts <command>`:
 
