@@ -157,18 +157,7 @@ async function applyHead(number: number, sha: string): Promise<number> {
 // The apply restarts the API, so the box only has to answer before it.
 async function startOrReach(cloud: CloudTarget, box: string, number: number): Promise<boolean> {
   const current = await cloud.state();
-  if (current && !needsBake(current)) {
-    try {
-      await cloud.readyFor({ reachable: true });
-      const stopped = await cloud.boxOutput(['stop-apply']);
-      if (stopped) log(stopped);
-
-      return true;
-    } catch (error) {
-      if ((await cloud.state())?.phase !== 'lost') throw error;
-      log(`${box} couldn't restore its snapshot, so it starts again from base: ${messageOf(error)}`);
-    }
-  } else {
+  if (!current || needsBake(current)) {
     const others = (await hostList()).filter((name) => /^pr-\d+$/.test(name) && name !== box);
     if (others.length >= MAX_BOXES) {
       await comment(
@@ -180,6 +169,8 @@ async function startOrReach(cloud: CloudTarget, box: string, number: number): Pr
     }
   }
   await cloud.up({ fromBase: true, reachable: true });
+  const stopped = await cloud.boxOutput(['stop-apply']);
+  if (stopped) log(stopped);
 
   return true;
 }
