@@ -7,7 +7,7 @@ import { githubToken, hostExists } from './cloud-http.ts';
 import { deployHost } from './deploy.ts';
 import { mail } from './mail.ts';
 import { sync } from './sync.ts';
-import { createUser, deleteUser, listUsers, teamUser } from './user.ts';
+import { createUser, deleteUser, inUserBox, listUsers } from './user.ts';
 
 const SHARED: ParseArgsOptionsConfig = { box: { type: 'string' } };
 
@@ -98,17 +98,19 @@ const commands: Record<string, Command> = {
     { limit: { type: 'string' }, html: { type: 'boolean' }, 'check-links': { type: 'boolean' } }
   ),
   user: {
-    usage: 'create|list|team|delete [email]',
-    help: "dashboard test users, agent+<box>.<id>@novu.co, each for one box only:\ncreate [--json]: one for the box, with its password; list [--limit <n>]: and which a create\nwould delete first at that many (default 50); team <email>: its own org on Team, after its\nonboarding; delete <email>",
+    usage: 'create|list|channels|team|delete [email]',
+    help: "dashboard test users, agent+<box>.<id>@novu.co, each for one box only:\ncreate [--json]: one for the box, with its password; list [--limit <n>]: and which a create\nwould delete first at that many (default 50); after its onboarding, channels <email>: its own\norg's messages to Mailpit and the sink, team <email>: its own org on Team; delete <email>",
     options: { ...SHARED, json: { type: 'boolean' }, limit: { type: 'string' } },
     run: async (parsed) => {
       const [action, email] = parsed.args;
       const limit = Number(parsed.option('limit') ?? 50);
       if (action === 'create') return createUser(parsed.option('box') ?? (await branchBox()), parsed.flag('json'));
       if (action === 'list' && Number.isInteger(limit) && limit > 0) return listUsers(limit);
-      if (action === 'team' && email) return teamUser(email);
+      if ((action === 'team' || action === 'channels') && email) return inUserBox(action, email);
       if (action === 'delete' && email) return deleteUser(email);
-      throw new Error('usage: box user create [--json] | list [--limit <n>] | team <email> | delete <email>');
+      throw new Error(
+        'usage: box user create [--json] | list [--limit <n>] | channels <email> | team <email> | delete <email>'
+      );
     },
   },
   down: onBox('', 'save the box to its snapshot and stop it; the next request wakes it', (target) => target.down()),

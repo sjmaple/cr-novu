@@ -7,7 +7,7 @@ import { doctor, quiesce, resume, state, stopApply } from './doctor.ts';
 import { bake, start } from './lifecycle.ts';
 import { logs } from './logs.ts';
 import { migrate } from './migrate.ts';
-import { teamTestUser } from './seed.ts';
+import { channelsTestUser, teamTestUser } from './seed.ts';
 import { pc } from './supervisor.ts';
 
 const token = process.env.GITHUB_TOKEN || undefined;
@@ -81,6 +81,15 @@ const commands: Record<string, Command> = {
       if (!args[0]) throw new Error('usage: box team <email>');
 
       return done(teamTestUser(args[0]));
+    },
+  },
+  channels: {
+    usage: '<email>',
+    help: "send a test user's own org's email to Mailpit and its SMS, push and chat to the sink, as the seed org's",
+    run: ({ args }) => {
+      if (!args[0]) throw new Error('usage: box channels <email>');
+
+      return done(channelsTestUser(args[0]));
     },
   },
   migrate: {

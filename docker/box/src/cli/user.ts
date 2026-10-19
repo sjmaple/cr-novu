@@ -28,11 +28,11 @@ export async function listUsers(limit: number): Promise<number> {
   return 0;
 }
 
-export async function teamUser(email: string): Promise<number> {
+export async function inUserBox(command: 'team' | 'channels', email: string): Promise<number> {
   const target = cloudTarget({ box: testUserBox(email), token: githubToken });
   await target.ready();
 
-  return target.box(['team', email]);
+  return target.box([command, email]);
 }
 
 export async function deleteUser(email: string): Promise<number> {

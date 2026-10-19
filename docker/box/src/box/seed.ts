@@ -92,12 +92,21 @@ export async function seedChannels(token: string): Promise<void> {
   }
 }
 
-export async function teamTestUser(email: string): Promise<void> {
+async function testUserToken(email: string): Promise<string> {
   const { user, org } = await testUserOrg(email);
   const token = await userToken(user.id, org.id);
   const novuOrg = (await api('/v1/organizations/me', ApiOrganization, { headers: bearer(token) })).data;
   if (novuOrg._id === SEED.novuOrgId) throw new Error(`${email}'s org is the seed org; leave it as it is`);
-  await seedTeamTier(token, email);
+
+  return token;
+}
+
+export async function teamTestUser(email: string): Promise<void> {
+  await seedTeamTier(await testUserToken(email), email);
+}
+
+export async function channelsTestUser(email: string): Promise<void> {
+  await seedChannels(await testUserToken(email));
 }
 
 export async function seedTeamTier(token: string, email = SEED.email): Promise<void> {
