@@ -427,7 +427,7 @@
       <div class="diagram-container">
       <svg style="min-width: 1280px" viewBox="0 0 1280 840" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="box-lifecycle-title box-lifecycle-desc">
         <title id="box-lifecycle-title">What happens when something reaches a box</title>
-        <desc id="box-lifecycle-desc">Two flowcharts for a Novu Box on Cloudflare: a request gets 503 while the box saves, is served when the container runs, wakes an asleep box by restoring its snapshot, and otherwise waits for box up to bake or restore from base; after 60 idle minutes or box down, the box stops its processes, snapshots its disk and goes to sleep, or starts its processes again if the save fails; box delete stops it and forgets its snapshot and Worker.</desc>
+        <desc id="box-lifecycle-desc">Two flowcharts for a Novu Box on Cloudflare: a request gets 503 while the box saves, is served when the container runs, wakes an asleep box by restoring its snapshot, and otherwise waits for box up to bake or restore from base; after 60 idle minutes or box down, the box stops its processes, snapshots its disk and goes to sleep, or starts its processes again if the save fails; box delete stops it, forgets its snapshot and deletes its Worker and test users.</desc>
         <defs>
           <marker id="box-lifecycle-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
           <marker id="box-lifecycle-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#bf4520"/></marker>
@@ -540,7 +540,7 @@
         <rect x="352" y="484" width="192" height="56" rx="6" fill="#f5f5f5"/>
         <rect x="352" y="484" width="192" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
         <text x="448" y="508" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Someone runs box up</text>
-        <text x="448" y="524" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">bake, or --from base</text>
+        <text x="448" y="524" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">bake, or start from base</text>
 
         <polygon points="184,572 268,612 184,652 100,612" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
         <text x="184" y="616" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Restore worked?</text>
@@ -593,7 +593,7 @@
         <rect x="1048" y="676" width="176" height="56" rx="20" fill="#f5f5f5"/>
         <rect x="1048" y="676" width="176" height="56" rx="20" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
         <text x="1136" y="700" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Stopped and gone</text>
-        <text x="1136" y="716" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">snapshot, Worker deleted</text>
+        <text x="1136" y="716" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Worker, users deleted</text>
 
         <!-- Legend strip -->
         <line x1="40" y1="776" x2="1240" y2="776" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
@@ -973,7 +973,7 @@
         <rect x="1080" y="362" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
         <text x="1094" y="371" fill="#2d3142" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">HUB</text>
         <text x="1136" y="386" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Delete box</text>
-        <text x="1136" y="402" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">+ snapshot, Worker</text>
+        <text x="1136" y="402" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">+ Worker, test users</text>
 
         <!-- The box: box apply -->
         <rect x="616" y="484" width="128" height="56" rx="6" fill="#f5f5f5"/>
@@ -1087,13 +1087,13 @@
         <rect x="112" y="112" width="240" height="64" rx="6" fill="#f5f5f5"/>
         <rect x="112" y="112" width="240" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
         <text x="232" y="140" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">ci</text>
-        <text x="232" y="158" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">ci/ci.ts · pr cleanup rebake</text>
+        <text x="232" y="158" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">ci/ci.ts · pr cleanup refresh rebake</text>
 
         <!-- cli -->
         <rect x="112" y="240" width="240" height="72" rx="6" fill="#f5f5f5"/>
         <rect x="112" y="240" width="240" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
         <text x="232" y="272" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">cli</text>
-        <text x="232" y="290" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">cli/main.ts · up sync logs</text>
+        <text x="232" y="290" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">cli/box.ts · up sync logs user</text>
 
         <!-- cloud/slack -->
         <rect x="520" y="112" width="240" height="64" rx="6" fill="#f5f5f5"/>

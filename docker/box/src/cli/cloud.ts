@@ -16,7 +16,7 @@ import {
   type Token,
 } from './cloud-http.ts';
 
-// A first bake takes 11 to 14 minutes on Cloudflare; a wake about 35 s, but the first restore of a snapshot 4 to 6
+// A first bake takes 13 to 16 minutes on Cloudflare; a wake about 35 s, but the first restore of a snapshot 4 to 6
 // minutes (the Slack router waits as long).
 const READY_WITHIN_SECONDS = { baking: 25 * 60, waking: 8 * 60, running: 5 * 60 };
 
@@ -218,7 +218,7 @@ export function cloudTarget(options: CloudOptions): CloudTarget {
     try {
       const answer = await call(`/up?${query}`, { method: 'POST' });
       const { state: started } = decode(StateAnswer, await answer.text(), `${worker} /up`);
-      log(`${worker}: ${started}${started === 'baking' ? ` ${ref} (11 to 14 minutes)` : ''}`);
+      log(`${worker}: ${started}${started === 'baking' ? ` ${ref} (13 to 16 minutes)` : ''}`);
       await waitFor(waits[started] ?? READY_WITHIN_SECONDS.running, reachable ? answers : (report) => report.ok);
     } catch (error) {
       // Its own snapshot is gone: now `lost`, it starts from base's.

@@ -114,7 +114,7 @@ const commands: Record<string, Command> = {
     },
   },
   down: onBox('', 'save the box to its snapshot and stop it; the next request wakes it', (target) => target.down()),
-  delete: onBox('', 'stop the box and delete it with its snapshot, Worker and test users', (target) =>
+  delete: onBox('', 'stop the box, forget its snapshot, delete its Worker and test users', (target) =>
     target.delete()
   ),
   deploy: {

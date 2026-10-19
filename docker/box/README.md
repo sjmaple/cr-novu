@@ -134,7 +134,8 @@ environments on the first signed-in request, as for a real sign-up; the dashboar
 Everything goes through the CLI on your machine (see "From your machine"). In the box, `box apply` (which `sync`
 and the PR workflow run) puts a PR, a branch, a full SHA or your checkout on a running box: it merges it onto the
 baked commit (like CI's merge ref) and stops if the two conflict. It then
-reinstalls if the lockfile changed, builds the projects `nx affected` reports, redeploys the API and worker,
+runs the full plan if `pnpm-lock.yaml`, `pnpm-workspace.yaml` or `.source` changed; otherwise it builds the projects
+`nx affected` reports, redeploys the API and worker,
 runs migrations and restarts what changed. A PR that changes `@novu/framework`, `@novu/agent-toolkit` or
 `playground/nextjs` also rebuilds the bridge app (about 55 s), restarts it and syncs it again, so the PR's
 workflows and agents run on the PR's framework. It logs the plan before it runs it, for example
@@ -182,7 +183,7 @@ the image with. No secrets (see "Secrets").
 | `node docker/box/src/cli/main.ts exec -- <command>` | Runs a command in the box's checkout (`/data/novu`) |
 | `node docker/box/src/cli/main.ts user create\|list\|channels\|team\|delete` | The box's own dashboard test users (see "Test users") |
 | `node docker/box/src/cli/main.ts down` | Saves the box to its snapshot and stops it; the next request, or `up`, wakes it with its data |
-| `node docker/box/src/cli/main.ts delete` | Stops the box and deletes it with its snapshot, Worker and test users (see below) |
+| `node docker/box/src/cli/main.ts delete` | Stops the box, forgets its snapshot, and deletes its Worker and test users (see below) |
 | `node docker/box/src/cli/main.ts deploy` | Deploys the host, its image and the Slack router (see below) |
 
 `sync` puts the checkout on the box as `apply` puts a PR: it commits HEAD plus every change, untracked files
@@ -277,8 +278,8 @@ its log:
 `.github/workflows/novu-box.yml` gives a PR in `novuhq/novu` its own box, `pr-<number>`, while we battle-test
 boxes on demand only:
 
-- Adding the `box` label starts the box from `base` (as `up --box pr-<n> --from base`; it bakes `next`
-  when `base` has no snapshot) and applies the PR's head commit as soon as the box answers (the apply restarts
+- Adding the `box` label starts the box from `base`'s snapshot (as `up` does for your branch's box; it bakes
+  `next` when `base` has none) and applies the PR's head commit as soon as the box answers (the apply restarts
   the API anyway; the comment waits for a healthy box). A PR box whose snapshot is gone starts from `base` again
   the same way. Only someone with write access to `novuhq/novu`
   can start one: the workflow checks who added the label, on every run, and otherwise only says so in the PR. PRs

@@ -211,7 +211,7 @@ export class Box extends DurableObject<HostEnv> {
     if (!this.#container.running) {
       if (life.phase === 'lost')
         return text(
-          `This box's snapshot ${life.lost.id} couldn't be restored (snapshots expire 30 days after they were made or last restored). Bake it again: run \`box up\`.\n`,
+          `This box's snapshot ${life.lost.id} couldn't be restored (snapshots expire 30 days after they were made or last restored). Run \`box up\` to start it again (from base, or a new bake).\n`,
           503
         );
       if (life.phase !== 'asleep') return text('This box is not set up yet: run `box up`.\n', 503);
@@ -280,8 +280,9 @@ export class Box extends DurableObject<HostEnv> {
 
   // Snapshots expire 30 days after they were made or last restored, and nothing extends them. A restore that fails
   // stops the container before the box ever answers, without an exit code; then the snapshot is forgotten (kept as
-  // `lost`) so `up` bakes again instead of retrying a dead id forever. Once the box has answered (its address or a
-  // command), its snapshot was restored, and a later stop says nothing about it.
+  // `lost`) so the next `up` starts it from base (a PR or branch box) or bakes it, instead of retrying a dead id
+  // forever. Once the box has answered (its address or a command), its snapshot was restored, and a later stop says
+  // nothing about it.
   #watchRestore(snapshot: Snapshot): void {
     this.#restoring = snapshot.id;
     this.#container.monitor().catch(async (error: unknown) => {
