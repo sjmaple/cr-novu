@@ -132,12 +132,9 @@ It builds only what the change needs (`src/box/build.ts`):
   changed in the same apply compiles against them; the old ones stay, marked stale, and the next apply that builds
   such a library builds the framework's declarations first. A change outside every project (a root config) builds
   every library the apps use, as a bake does (nx's cache replays the unchanged ones).
-- **The lockfile:** it reinstalls, then rebuilds and restarts only the apps whose locked dependencies changed, by
-  comparing what each installs at the two commits (`src/box/lockfile.ts`; nx can't tell from a changed lockfile).
-  Its devDependencies and the root's count (a new SWC, TypeScript or Nest CLI rebuilds every app); only a change to
-  an app's production dependencies redeploys it (`pnpm deploy`). The API and worker deploy at once, offline first.
-  After an interrupted apply, a lockfile change rebuilds and redeploys everything. A changed `package.json` alone
-  doesn't reinstall: a dependency change always changes the lockfile.
+- **The lockfile, `pnpm-workspace.yaml` or `.source`:** it runs the full plan, as `--full` does: it reinstalls,
+  builds every app, redeploys the API and worker (`pnpm deploy`, at once, offline first) and restarts everything. A
+  changed `package.json` alone doesn't reinstall: a dependency change always changes the lockfile.
 
 Add `--full` to install, build and restart everything, as a bake does (about 5 minutes), when the box behaves in a
 way the PR doesn't explain. `apply` also logs the PR's `PR Checks Passed` result from GitHub, and a `WARN` if
@@ -221,7 +218,7 @@ or `adopt` during a save wins.
 | `down` (stop every process, snapshot, stop) | 18 s to 6 min (the box saves on its own; `down` waits, and fails unless a new snapshot is stored) |
 | Wake, from the first request to a healthy API | 33 to 42 s |
 | `sync`, an API change | 57 to 83 s |
-| `apply` in the box, to healthy apps | an API change 40 s, a worker change 16 s, a library change 51 to 69 s (more when the declarations of `@novu/shared` change: 119 s), `@novu/framework` 114 s, a lockfile change that changes no app's dependencies 20 s |
+| `apply` in the box, to healthy apps | an API change 40 s, a worker change 16 s, a library change 51 to 69 s (more when the declarations of `@novu/shared` change: 119 s), `@novu/framework` 114 s, a lockfile change (the full plan) about 5 min |
 | Smoke over the public address (a box started from `base`) | 43/43 in 70 to 75 s |
 | `up --from base` for a new box (deploy its Worker, then wake from base's snapshot, no bake) | 80 to 106 s, of which about 40 s is the wake |
 | The same, seen three times | 4 to 6 min (inside the start); cause unknown |

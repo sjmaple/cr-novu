@@ -6,8 +6,6 @@ interface ProcessEntry {
   readonly projects?: ReadonlyArray<string>;
   readonly paths?: ReadonlyArray<string>;
   readonly deploy?: string;
-  // The workspace package it runs, whose locked dependencies a lockfile change may reach.
-  readonly dir?: string;
 }
 
 export const PROCESSES: Readonly<Record<string, ProcessEntry>> = {
@@ -19,22 +17,13 @@ export const PROCESSES: Readonly<Record<string, ProcessEntry>> = {
   mail: { kind: 'store' },
   sink: { kind: 'app' },
   migrate: { kind: 'app' },
-  api: { kind: 'app', projects: ['@novu/api-service'], deploy: '@novu/api-service', dir: 'apps/api' },
-  worker: { kind: 'app', projects: ['@novu/worker'], deploy: '@novu/worker', dir: 'apps/worker' },
-  socket: { kind: 'app', paths: ['enterprise/workers/socket/'], dir: 'enterprise/workers/socket' },
-  dashboard: { kind: 'app', projects: ['@novu/dashboard'], dir: 'apps/dashboard' },
+  api: { kind: 'app', projects: ['@novu/api-service'], deploy: '@novu/api-service' },
+  worker: { kind: 'app', projects: ['@novu/worker'], deploy: '@novu/worker' },
+  socket: { kind: 'app', paths: ['enterprise/workers/socket/'] },
+  dashboard: { kind: 'app', projects: ['@novu/dashboard'] },
   stripe: { kind: 'app' },
-  bridge: {
-    kind: 'app',
-    projects: ['@novu/framework', '@novu/agent-toolkit'],
-    paths: ['playground/nextjs/'],
-    dir: 'playground/nextjs',
-  },
-  thalamus: {
-    kind: 'app',
-    paths: ['enterprise/workers/thalamus-observer/'],
-    dir: 'enterprise/workers/thalamus-observer',
-  },
+  bridge: { kind: 'app', projects: ['@novu/framework', '@novu/agent-toolkit'], paths: ['playground/nextjs/'] },
+  thalamus: { kind: 'app', paths: ['enterprise/workers/thalamus-observer/'] },
 };
 
 const entries = Object.entries(PROCESSES);
@@ -52,7 +41,4 @@ export const PATH_PROCESSES: Readonly<Record<string, string>> = Object.fromEntri
 );
 export const DEPLOYED_APPS: Readonly<Record<string, string>> = Object.fromEntries(
   entries.flatMap(([name, entry]) => (entry.deploy ? [[name, entry.deploy]] : []))
-);
-export const PROCESS_DIRS = entries.flatMap(([name, entry]) =>
-  entry.dir ? [{ name, dir: entry.dir, deployed: Boolean(entry.deploy) }] : []
 );
