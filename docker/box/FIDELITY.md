@@ -109,9 +109,8 @@ Asked Cloudflare on 2026-10-18; until they answer:
 - **Does a restore refresh the 30-day retention of a snapshot's ancestors,** or only that of the restored snapshot?
   A PR box idle for 30+ days may not restore. It then starts again from the current `base` and applies its PR, so its
   data is lost. Idle PR boxes aren't reset automatically; removing and re-adding the `box` label recreates one.
-- **Chain depth:** no documented limit, and unknown whether restores slow down as chains get deeper. A refresh
-  rebakes `base` instead when its chain is past 30 snapshots, 5 GB of deltas or 26 hours since its bake, and `base`
-  is rebaked nightly.
+- **Chain depth:** no documented limit, and unknown whether restores slow down as chains get deeper. `base` is
+  rebaked nightly, and a refresh rebakes it instead once its bake is over 26 hours old.
 - **Cost after the beta:** snapshot storage is unpriced today (public beta since 2026-09-30).
 - **A custom TTL, or a supported list and delete API:** "not yet", per the docs. The sweep uses the registry API, with
   a token that has Containers: Edit.

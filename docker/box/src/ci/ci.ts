@@ -28,6 +28,8 @@ const MAX_BOXES = 30;
 const REBAKE_BOX = 'base-next';
 const APPLY_MINUTES = 20;
 const SETTLE_SECONDS = 3 * 60;
+// Past a day since base's bake, a nightly rebake was skipped (a refresh that waited replaced it).
+const REBAKE_HOURS = 26;
 const CLI = 'node docker/box/src/cli/main.ts';
 const RUN_URL =
   process.env.GITHUB_RUN_ID && `${process.env.GITHUB_SERVER_URL}/${REPO}/actions/runs/${process.env.GITHUB_RUN_ID}`;
@@ -286,25 +288,24 @@ async function rebake(): Promise<number> {
 async function refresh(): Promise<number> {
   const base = target('base');
   const { sha } = await github(`/repos/${REPO}/commits/next`, z.object({ sha: z.string() }));
-  const tooOld = await chainTooLong();
-  if (tooOld) return rebakeBecause(tooOld);
   try {
     await base.readyFor({ reachable: true });
   } catch (error) {
     return rebakeBecause(`${base.name} doesn't wake: ${messageOf(error)}`);
   }
-  let recipe: string | null = null;
+  let tooOld: string | null = null;
   try {
     const { baked, applied, applying } = decode(BoxState, await base.boxOutput(['state']), '`box state`');
     if (!baked) throw new Error(`${base.name} isn't baked`);
-    if (baked.sha === sha && !applied && !applying) {
-      log(`${base.name} is on next's head ${sha.slice(0, 10)} already`);
-      await base.discard();
+    const hours = (Date.now() - Date.parse(baked.at)) / 3_600_000;
+    tooOld = hours > REBAKE_HOURS ? `${base.name} was baked ${Math.round(hours)} hours ago` : null;
+    if (!tooOld) {
+      if (baked.sha === sha && !applied && !applying) {
+        log(`${base.name} is on next's head ${sha.slice(0, 10)} already`);
+        await base.discard();
 
-      return 0;
-    }
-    recipe = await recipeChange(baked.sha, sha);
-    if (!recipe) {
+        return 0;
+      }
       log(await apply(base, sha, { baseline: true }));
 
       return saved(await base.down());
@@ -317,58 +318,13 @@ async function refresh(): Promise<number> {
   }
   await base.discard();
 
-  return rebakeBecause(recipe);
+  return rebakeBecause(tooOld);
 }
 
 function rebakeBecause(why: string): Promise<number> {
   log(`${why}: baking base again instead`);
 
   return rebake();
-}
-
-// Past these, a refresh rebakes instead: a long chain may restore slower, and it keeps every delta in storage. Past
-// a day, a nightly rebake was skipped (a refresh that waited replaced it).
-const CHAIN_MAX = { snapshots: 30, deltaGigabytes: 5, hours: 26 };
-
-async function chainTooLong(): Promise<string | null> {
-  const report = await hostBoxes('sweep?dry-run', SweepAnswer, { method: 'POST', token: boxToken }).catch(
-    (error: unknown) => {
-      log(`WARN: no snapshot report, so base's chain isn't checked: ${messageOf(error)}`);
-
-      return null;
-    }
-  );
-  if (!report) return null;
-  const root = report.roots.find((entry) => entry.box === 'base');
-  if (!root?.snapshot) return 'base has no snapshot';
-  if (report.missing.some((entry) => entry.startsWith('base:'))) return "base's snapshot isn't in the registry";
-  const { chain } = root;
-  if (!chain) return null;
-  const hours = chain.began ? (Date.now() - Date.parse(chain.began)) / 3_600_000 : 0;
-  if (chain.snapshots > CHAIN_MAX.snapshots) return `base's chain has ${chain.snapshots} snapshots`;
-  if (chain.deltaGigabytes > CHAIN_MAX.deltaGigabytes) return `base's chain has ${chain.deltaGigabytes} GB of deltas`;
-  if (hours > CHAIN_MAX.hours) return `base was baked ${Math.round(hours)} hours ago`;
-
-  return null;
-}
-
-// What a bake sets up that an apply doesn't redo: the box's own code and image, Node, pnpm.
-const RECIPE = [/^docker\/box\//, /^\.nvmrc$/];
-
-async function recipeChange(from: string, to: string): Promise<string | null> {
-  const { files } = await github(
-    `/repos/${REPO}/compare/${from}...${to}`,
-    z.object({ files: z.array(z.object({ filename: z.string(), patch: z.string().optional() })).default([]) })
-  );
-  // GitHub lists at most 300 files.
-  if (files.length >= 300) return `${files.length}+ files changed`;
-  const changed = files.find(
-    ({ filename, patch = '' }) =>
-      RECIPE.some((pattern) => pattern.test(filename)) ||
-      (filename === 'package.json' && /^[-+]\s*"packageManager"/m.test(patch))
-  );
-
-  return changed ? `the merge changes ${changed.filename}, which the bake uses` : null;
 }
 
 async function saved(code: number): Promise<number> {

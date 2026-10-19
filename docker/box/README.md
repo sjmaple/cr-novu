@@ -301,8 +301,7 @@ boxes on demand only:
   save). A `base` already on `next`'s head is stopped again without a save. A failed apply (a `next` that doesn't
   build) stops `base` without a save (`/__box/discard`), so it keeps its last snapshot, and the job fails; the next
   push tries again. It rebakes instead when `base` has no snapshot or doesn't wake (a snapshot from an older image),
-  when the merge changes what the bake sets up (`docker/box/`, `.nvmrc`, the pnpm version), or when `base`'s chain
-  is past 30 snapshots, 5 GB of deltas or 26 hours since its bake (a skipped nightly rebake).
+  or when `base` was baked over 26 hours ago (a skipped nightly rebake; a refresh keeps the bake's time).
 - Nightly, the workflow also rebakes `base` from `next` (`rebake`), starting a new snapshot chain, so refreshes
   don't grow one chain forever, and keeping its snapshot from expiring. It bakes in a box of its own,
   `base-next`, saves it, and only then does `base` take over that snapshot (`/__box/adopt`) and `base-next` go:
