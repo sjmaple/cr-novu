@@ -86,7 +86,7 @@ host-only ones. A box runs PR code, and that code can read its environment, so:
 | `NX_CLOUD_ACCESS_TOKEN` (optional) | yes | Nx Cloud, the workspace in `nx.json`, a **read-only** CI token (never a read-write one: PR code could fill the shared cache) | The box's nx builds read CI's remote cache; without it they use only the local cache |
 | `GITHUB_READ_TOKEN` | no | GitHub, fine-grained, `novuhq`, repositories `novu` and `packages-enterprise`, Contents and Checks read | Every bake's and apply's git fetches and CI lookup (never the installs, builds or apps), instead of the caller's token, so no push-capable token reaches a box. Without it, people's calls use their own `gh` token, and CI can't apply |
 | `CLOUDFLARE_API_TOKEN` | no | Cloudflare, Account, Workers Scripts, Edit, on the Novu account only | The `/__box/boxes` routes, which create and delete boxes' Workers |
-| `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | no | Novu Bot (see "Slack") | The Slack router; without them, boxes get no Slack |
+| `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | no | Novu Box (see "Slack") | The Slack router; without them, boxes get no Slack |
 
 A new fine-grained GitHub token needs an org owner's approval (the current one expires 2027-10-17). Until it's
 approved it reads only public `novuhq/novu`: applying a PR works, but a bake (so the nightly rebake, and a box
@@ -329,27 +329,27 @@ push-capable GitHub tokens people use. Boxes' Workers are created and deleted on
 
 The Slack router's Worker, `novu-box-slack` (`wrangler.slack.jsonc`), deploys with the host.
 
-#### Slack: Novu Bot in `#novu-box`
+#### Slack: Novu Box in `#novu-box`
 
-Boxes' agents can be used from the company Slack through one app, Novu Bot, in `#novu-box` and in DMs with
+Boxes' agents can be used from the company Slack through one app, Novu Box, in `#novu-box` and in DMs with
 the bot. The Slack router (`src/cloud/slack/router.ts`; each box's part is `src/cloud/slack/box.ts`) runs in the
 host Worker as one more Durable Object, at its own address `novu-box-slack` (a small Worker like a box's, deployed
 with the host); it holds the real bot token and signing secret and stands between Slack and every box; no box ever
 sees them.
 
-- Slack is on when the host has Novu Bot's credentials (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, host secrets
+- Slack is on when the host has Novu Box's credentials (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, host secrets
   which no box gets; see "Secrets"). Then every box gets `SLACK_API_URL`, the router's `/api/`.
-  `box deploy` always deploys `novu-box-slack`; its address and the channel are in `wrangler.jsonc`'s `vars`. Novu Bot's Events, Interactivity
+  `box deploy` always deploys `novu-box-slack`; its address and the channel are in `wrangler.jsonc`'s `vars`. Novu Box's Events, Interactivity
   and `/novu-box` request URLs are `https://novu-box-slack.cli-shortener.workers.dev/slack`.
 - Once a box is up, and again when its agents change (a `sync`), the host gives each of the bridge app's agents a
   Slack integration (`box-slack-<agent>`) and a workspace connection through the box's API, with a bot token
   and signing secret the router made up for that box. The router posts "<box> ready · Talk to: …" in
   `#novu-box`; `delete` removes it and the box's tokens.
 - In Slack, pick a box and agent with a Talk to button (or `/novu-box <box> [agent]`),
-  then @mention Novu Bot in `#novu-box` or DM it. A thread keeps its box and agent; the main DM follows your
+  then @mention Novu Box in `#novu-box` or DM it. A thread keeps its box and agent; the main DM follows your
   pick. Replies show as "<box> · <agent>". The agents answer only people linked to a subscriber, so the first
   time someone writes to a box's agent, the router has the host link them as subscriber `slack-<user id>`.
-  Start a thread with a mention; `custom-code-agent` reads the first word, so `@Novu Bot card` gets its command
+  Start a thread with a mention; `custom-code-agent` reads the first word, so `@Novu Box card` gets its command
   list, and `card` as a reply in the thread (or in a DM) gets the card. For a sleeping box the router answers Slack at once, posts
   "Waking <box> (about 40 s)…" in the thread, and delivers the message when the box is up (it retries for 8
   minutes). In a thread of a deleted box, the router tells you so and to start a new message.
