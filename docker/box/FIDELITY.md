@@ -92,7 +92,15 @@ What differs, or is still a workaround, because the box runs on Cloudflare (`src
 | GitHub token | Not in the app's environment | A bake or apply holds a token (the host's read-only `GITHUB_READ_TOKEN`, or the caller's when the host has none) and gives it only to git's fetches, for github.com only. PR code runs as the same user while it installs, so a compromised dependency's install script in a PR could read the read-only token | - | Fetch in a step of its own before any PR code runs, or the Worker adds the token to requests to GitHub on the way out |
 | Calls to its own address | Internal | `API_ROOT_URL` and S3 links are the public address, so the box's calls to itself go out to the internet and back | Extra latency on those calls | Route them back inside the Worker |
 | Uptime | Always on | Sleeps after 1 h without requests and wakes in 35 to 50 s; a Cloudflare host restart loses changes since the last save | The first request after a sleep waits | - |
-| Snapshot storage | - | Snapshots are delta chains in the account's registry; the host's sweep deletes those no box's chain needs (README, "Snapshots"). Several storage rules are undocumented (below) | - | Ask Cloudflare (asked) |
+| Snapshot storage | - | Snapshots are delta chains in the account's registry, and nothing deletes them (below). Several storage rules are undocumented (below) | - | Ask Cloudflare (asked) |
+
+### Deleting snapshots
+
+Nothing deletes snapshots automatically, and deletes haven't observably freed storage (below). To delete some by hand
+if it's ever needed: `npx wrangler containers images list` and `npx wrangler containers images delete`, or the registry
+API (the tags, then the manifest by digest, then `PUT /v2/gc/layers`), keeping the whole chain (`restore_chain`) of
+every live box's snapshot. The removed sweep that did this is in git history at commit `762d217965`
+(`src/cloud/sweep.ts`), with its research in `.scratch/base-refresh/`.
 
 ### Snapshot storage: open questions
 
@@ -103,17 +111,17 @@ Asked Cloudflare on 2026-10-18; until they answer:
   snapshots don't count or the limit isn't enforced strictly. The limit can be raised on request; we asked for 200 GB.
 - **Does deleting a snapshot free storage?** Not seen. After 41 snapshots (45 GB listed) were deleted by digest and the
   registry GC (`PUT /v2/gc/layers`) ran, the GC reported `deleted: []`, and their layer blobs still downloaded 3.5 h
-  later. Cloudflare shows no usage figure. The sweep keeps the registry list clean either way.
+  later. Cloudflare shows no usage figure.
 - **Is deleting an ancestor safe for its descendants?** Descendants still restored in our test, but the ancestor's
-  data was never actually removed, so that proves little. The sweep keeps whole chains.
+  data was never actually removed, so that proves little.
 - **Does a restore refresh the 30-day retention of a snapshot's ancestors,** or only that of the restored snapshot?
   A PR box idle for 30+ days may not restore. It then starts again from the current `base` and applies its PR, so its
   data is lost. Idle PR boxes aren't reset automatically; removing and re-adding the `box` label recreates one.
 - **Chain depth:** no documented limit, and unknown whether restores slow down as chains get deeper. `base` is
   rebaked nightly, and a refresh rebakes it instead once its bake is over 26 hours old.
 - **Cost after the beta:** snapshot storage is unpriced today (public beta since 2026-09-30).
-- **A custom TTL, or a supported list and delete API:** "not yet", per the docs. The sweep uses the registry API, with
-  a token that has Containers: Edit.
+- **A custom TTL, or a supported list and delete API:** "not yet", per the docs; the registry API needs a token with
+  Containers: Edit.
 - **If the limit can't be raised and snapshots count**, these are the options, cheapest first: rebake `base` weekly
   instead of nightly; move PR boxes older than N days onto the current `base` (they lose their data); allow fewer PR
   boxes; or give PR boxes no snapshots of their own (a wake becomes a fresh `base` plus a re-apply, 1 to 6 min).

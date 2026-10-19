@@ -10,7 +10,6 @@ export type HostEnv = {
   readonly CLOUDFLARE_ACCOUNT_ID: string;
   readonly GITHUB_READ_TOKEN?: string;
   readonly IDLE_MINUTES?: string;
-  readonly SWEEP?: string;
   readonly SLACK_BOT_TOKEN?: string;
   readonly SLACK_SIGNING_SECRET?: string;
   readonly SLACK_ROUTER_URL?: string;

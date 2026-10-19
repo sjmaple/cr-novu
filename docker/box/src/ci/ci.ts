@@ -18,7 +18,6 @@ import {
   OidcToken,
   Pull,
   PullRequestEvent,
-  SweepAnswer,
 } from '../shared/contracts.ts';
 import { messageOf } from '../shared/errors.ts';
 import { BOX_CLI, boxWorker, DOMAIN, detached, OIDC_AUDIENCE } from '../shared/names.ts';
@@ -264,8 +263,8 @@ async function cleanup(): Promise<number> {
 }
 
 // Bakes next in a box of its own and saves it, then base takes over that snapshot: a new snapshot chain, younger than
-// Cloudflare's 30 days, so the refreshes' deltas don't pile up forever and the sweep can delete the old chain once no
-// box needs it. Until the new snapshot is saved, base keeps its own, and a failed bake leaves it.
+// Cloudflare's 30 days, so the refreshes' deltas don't pile up forever. Until the new snapshot is saved, base keeps
+// its own, and a failed bake leaves it.
 async function rebake(): Promise<number> {
   const baking = target(REBAKE_BOX);
   try {
@@ -279,7 +278,7 @@ async function rebake(): Promise<number> {
     await baking.delete().catch((error: unknown) => log(`WARN: deleting ${baking.name}: ${messageOf(error)}`));
   }
 
-  return saved(0);
+  return 0;
 }
 
 // Puts next's head on base and saves it, so a new PR box starts from it and builds only its own changes. A failed
@@ -308,7 +307,7 @@ async function refresh(): Promise<number> {
       }
       log(await apply(base, sha, { baseline: true }));
 
-      return saved(await base.down());
+      return await base.down();
     }
   } catch (error) {
     log(`ERROR: refreshing ${base.name} failed, so it keeps its last snapshot: ${messageOf(error)}`);
@@ -325,22 +324,6 @@ function rebakeBecause(why: string): Promise<number> {
   log(`${why}: baking base again instead`);
 
   return rebake();
-}
-
-async function saved(code: number): Promise<number> {
-  try {
-    const report = await hostBoxes('sweep', SweepAnswer, { method: 'POST', token: boxToken });
-    const { deleting, deleted, unreachable, gigabytes, blocked } = report;
-    log(
-      blocked
-        ? `snapshot sweep: deletes nothing: ${blocked}`
-        : `snapshot sweep: ${deleting ? `deleted ${deleted.length}` : `would delete ${unreachable.length}`} (${gigabytes.unreachable} GB); kept ${gigabytes.kept} GB`
-    );
-  } catch (error) {
-    log(`WARN: the snapshot sweep failed: ${messageOf(error)}`);
-  }
-
-  return code;
 }
 
 await main('ci', () =>

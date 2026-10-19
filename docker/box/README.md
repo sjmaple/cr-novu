@@ -85,7 +85,7 @@ host-only ones. A box runs PR code, and that code can read its environment, so:
 | `NOVU_MANAGED_CLAUDE_API_KEY` (optional) | yes | Anthropic, a workspace with a monthly spend limit, never Novu's production key | Start (runs thalamus and seeds the `box-managed` agent), API, bridge app (real models for its agents) |
 | `BULL_MQ_PRO_NPM_TOKEN` (optional) | yes | Taskforce.sh registry | Bake; without it the box runs open-source BullMQ |
 | `GITHUB_READ_TOKEN` | no | GitHub, fine-grained, `novuhq`, repositories `novu` and `packages-enterprise`, Contents and Checks read | Every bake's and apply's git fetches and CI lookup (never the installs, builds or apps), instead of the caller's token, so no push-capable token reaches a box. Without it, people's calls use their own `gh` token, and CI can't apply |
-| `CLOUDFLARE_API_TOKEN` | no | Cloudflare, Account, Workers Scripts, Edit, and Containers, Edit, on the Novu account only | The `/__box/boxes` routes, which create and delete boxes' Workers; the snapshot sweep (Containers: the registry), see "Snapshots" |
+| `CLOUDFLARE_API_TOKEN` | no | Cloudflare, Account, Workers Scripts, Edit, on the Novu account only | The `/__box/boxes` routes, which create and delete boxes' Workers |
 | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | no | Novu Bot (see "Slack") | The Slack router; without them, boxes get no Slack |
 
 A new fine-grained GitHub token needs an org owner's approval (the current one expires 2027-10-17). Until it's
@@ -245,26 +245,8 @@ again from `base` and apply the PR or your checkout; `up --box <name>` says so, 
 Each save is a btrfs delta on the snapshot the box woke from, stored in the account's registry (two tags,
 `rootfs-snapshot-*` and `rootfs-set-*`, on the repository of the box image; `npx wrangler containers images list`),
 and its metadata lists its whole chain back to the first full snapshot (about 3.7 GB). A box started from `base`
-continues `base`'s chain. Cloudflare documents no rule for deleting an ancestor, so the host's sweep
-(`src/cloud/sweep.ts`, hourly, and after each save of `base` from the workflow) deletes by reachability:
-
-- It keeps every snapshot in the chain of each box's current snapshot (`restore_chain`, and each parent; every Box
-  Durable Object that stores anything, and every box the host lists, read from what they store), of the snapshot a
-  rebake replaced on `base` in the last hour (a PR box may have just read it), and of every snapshot under an hour
-  old, or without a time (a save whose id its box hasn't stored yet).
-- It deletes the rest of this host's container application's snapshots; it never touches another application's.
-  Deleting a snapshot's tags often leaves the manifest (listed by its digest), so it deletes the tags, then the
-  manifest by digest, then runs the registry's layer GC. Whether that frees the storage is unverified: after 41
-  deletes the GC reported nothing deleted and every deleted snapshot's layer blob still answered.
-- It deletes nothing when a box's current snapshot isn't in the registry, or `base` has no snapshot. A box asleep
-  for over 30 days whose snapshot is gone doesn't count: Cloudflare expired it.
-- It deletes only when the host's `SWEEP` var (`wrangler.jsonc`) is `delete`; otherwise it reports what it would
-  delete. `POST /__box/sweep` (`?dry-run` to only report) runs it and answers the report.
-
-A refresh adds a delta to `base`'s chain (0.4 GB for 56 changed files), and nothing in that chain can go while
-`base` uses it; the nightly rebake starts a new chain, and the old one goes once no box started from it is left.
-The sweep's report also gives each box's chain (snapshots, GB of deltas, when its first snapshot was baked), which
-the refresh reads.
+continues `base`'s chain. A refresh adds a delta to `base`'s chain (0.4 GB for 56 changed files); the nightly
+rebake starts a new chain. Nothing deletes old snapshots (`FIDELITY.md`, "Snapshot storage").
 
 Limits for now: requests the box makes to its own public address go out through the internet; a host redeploy with a new
 image is untested with boxes running. A `sync` whose rebuild runs longer than 5 minutes (a playground change, with
@@ -321,7 +303,6 @@ push-capable GitHub tokens people use. Boxes' Workers are created and deleted on
 | `GET /__box/boxes` | Lists the boxes (every `novu-box-<name>` Worker but the host and the router) |
 | `PUT /__box/boxes/<box>` | Uploads the box's Worker (`thin.ts`, bundled into one module by `box deploy`, bound to the host's Box class) and puts it on workers.dev |
 | `DELETE /__box/boxes/<box>` | Stops the box and forgets it, then deletes its Worker; keeps the Worker (502) when the box didn't stop |
-| `POST /__box/sweep` | Runs the snapshot sweep (see "Snapshots") and answers its report; `?dry-run` only reports |
 
 The Slack router's Worker, `novu-box-slack` (`wrangler.slack.jsonc`), deploys with the host.
 

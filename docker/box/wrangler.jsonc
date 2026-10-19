@@ -27,11 +27,8 @@
     "Box": { "type": "durable-object", "storage": "sqlite" },
     "Router": { "type": "durable-object", "storage": "sqlite" }
   },
-  // The snapshot sweep (src/cloud/sweep.ts); it deletes only with SWEEP set to "delete".
-  "triggers": { "crons": ["41 * * * *"] },
   "vars": {
     "CLOUDFLARE_ACCOUNT_ID": "33ec6e8088201ace372678be50170681",
-    "SWEEP": "report",
     "SLACK_ROUTER_URL": "https://novu-box-slack.cli-shortener.workers.dev",
     "SLACK_CHANNEL": "C0C9PHBUDR6"
   }

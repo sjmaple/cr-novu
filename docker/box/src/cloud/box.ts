@@ -48,24 +48,8 @@ import { ALARM_MS, backstopMs, idleMs, recoverSave, save } from './sleep.ts';
 
 const PUBLIC_PORT = 18080;
 const INSTANCE = 'standard-4';
-// A box that read the replaced snapshot just before `adopt` starts from it within a minute or two.
-const REPLACED_KEPT_MS = 60 * 60 * 1000;
 
 type StartFrom = { readonly image: string } | { readonly containerSnapshot: Snapshot };
-
-interface Replaced {
-  readonly id: string;
-  readonly at: number;
-}
-
-export interface StoredSnapshots {
-  readonly origin: string | null;
-  readonly phase: Life['phase'];
-  readonly since: number;
-  readonly snapshot: string | null;
-  // The snapshot an `adopt` replaced, for an hour.
-  readonly replaced: string | null;
-}
 
 export class Box extends DurableObject<HostEnv> {
   #generation = 0;
@@ -179,20 +163,6 @@ export class Box extends DurableObject<HostEnv> {
     const origin = (await this.ctx.storage.get<string>('origin')) ?? null;
 
     return { ...status(life, this.#container.running, lastActivity, origin), ...(await slackState(this.#slack)) };
-  }
-
-  // For the snapshot sweep: what's stored, without `#reconcile`, which can stop a box that's starting.
-  async stored(): Promise<StoredSnapshots> {
-    const life = await lifeOf(this.ctx.storage);
-    const replaced = await this.ctx.storage.get<Replaced>('replaced');
-
-    return {
-      origin: (await this.ctx.storage.get<string>('origin')) ?? null,
-      phase: life.phase,
-      since: life.since,
-      snapshot: snapshotOf(life)?.id ?? null,
-      replaced: replaced && Date.now() - replaced.at < REPLACED_KEPT_MS ? replaced.id : null,
-    };
   }
 
   slackEvent(event: SlackEvent): Promise<SlackAnswer | null> {
@@ -397,8 +367,6 @@ export class Box extends DurableObject<HostEnv> {
     this.#stopUnsaved();
     if (this.#container.running) await this.#container.destroy('replaced');
     const storage = this.ctx.storage;
-    const before = snapshotOf(await lifeOf(storage));
-    if (before && before.id !== id) await storage.put('replaced', { id: before.id, at: Date.now() } satisfies Replaced);
     await storage.put('origin', url.origin);
     await setLife(storage, { phase: 'asleep', since: Date.now(), snapshot: { id, name: `adopted ${id}` }, error: null });
 

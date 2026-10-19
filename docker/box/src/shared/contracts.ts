@@ -150,30 +150,9 @@ export const StateAnswer = z.object({ state: z.string(), ref: z.string().optiona
 export type StateAnswer = z.infer<typeof StateAnswer>;
 
 export const BoxList = z.object({ boxes: z.array(z.string()) });
-export const SweepAnswer = z.object({
-  deleting: z.boolean(),
-  roots: z.array(
-    z.object({
-      box: z.string(),
-      snapshot: z.string().nullable(),
-      chain: z.object({ snapshots: z.number(), deltaGigabytes: z.number(), began: z.string().nullable() }).nullable(),
-    })
-  ),
-  missing: z.array(z.string()),
-  deleted: z.array(z.string()),
-  unreachable: z.array(z.unknown()),
-  gigabytes: z.object({ kept: z.number(), unreachable: z.number() }),
-  blocked: z.string().nullable(),
-});
 
 
-export const CloudflareAnswer = z.object({
-  success: z.boolean(),
-  errors: z.unknown(),
-  result: z.unknown(),
-  result_info: z.object({ cursor: z.string().nullish() }).nullish(),
-});
-export type CloudflareAnswer = z.infer<typeof CloudflareAnswer>;
+export const CloudflareAnswer = z.object({ success: z.boolean(), errors: z.unknown(), result: z.unknown() });
 export const ScriptList = z.array(z.object({ id: z.string() }));
 
 export const CheckRuns = z.object({
